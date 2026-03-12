@@ -13,49 +13,89 @@ export const UserRole = IDL.Variant({
   'user' : IDL.Null,
   'guest' : IDL.Null,
 });
-export const Time = IDL.Int;
+export const Announcement = IDL.Record({
+  'id' : IDL.Nat,
+  'title' : IDL.Text,
+  'date' : IDL.Text,
+  'message' : IDL.Text,
+});
+export const BracketSlot = IDL.Record({
+  'id' : IDL.Nat,
+  'team1' : IDL.Text,
+  'team2' : IDL.Text,
+});
+export const Bracket = IDL.Record({
+  'qf' : IDL.Vec(BracketSlot),
+  'sf' : IDL.Vec(BracketSlot),
+  'final' : BracketSlot,
+});
 export const UserProfile = IDL.Record({ 'name' : IDL.Text });
-export const Poll = IDL.Record({
-  'question' : IDL.Text,
-  'votes' : IDL.Vec(IDL.Nat),
-  'options' : IDL.Vec(IDL.Text),
+export const LeaderboardRow = IDL.Record({
+  'd' : IDL.Nat,
+  'l' : IDL.Nat,
+  'w' : IDL.Nat,
+  'ga' : IDL.Nat,
+  'gf' : IDL.Nat,
+  'id' : IDL.Nat,
+  'played' : IDL.Nat,
+  'player' : IDL.Text,
+  'points' : IDL.Nat,
 });
-export const Tournament = IDL.Record({
+export const MatchResult = IDL.Record({
+  'id' : IDL.Nat,
+  'team1' : IDL.Text,
+  'team2' : IDL.Text,
+  'score1' : IDL.Nat,
+  'score2' : IDL.Nat,
+});
+export const Poll = IDL.Record({ 'id' : IDL.Nat, 'matchup' : IDL.Text });
+export const TournamentSettings = IDL.Record({
+  'status' : IDL.Text,
   'maxSlots' : IDL.Nat,
-  'name' : IDL.Text,
-  'slots' : IDL.Vec(IDL.Text),
-  'entryFee' : IDL.Nat,
-  'dateTime' : Time,
+  'entryFee' : IDL.Text,
+  'dateTime' : IDL.Text,
 });
-export const Winner = IDL.Record({
+export const SlotRequest = IDL.Record({
+  'id' : IDL.Nat,
+  'status' : IDL.Text,
+  'submittedAt' : IDL.Int,
   'playerName' : IDL.Text,
-  'position' : IDL.Nat,
+  'slotNumber' : IDL.Nat,
 });
+export const Slot = IDL.Record({ 'id' : IDL.Nat, 'player' : IDL.Text });
 
 export const idlService = IDL.Service({
   '_initializeAccessControlWithSecret' : IDL.Func([IDL.Text], [], []),
-  'addWinner' : IDL.Func([IDL.Text, IDL.Nat], [], []),
+  'approveSlotRequest' : IDL.Func([IDL.Nat], [], []),
   'assignCallerUserRole' : IDL.Func([IDL.Principal, UserRole], [], []),
-  'createOrUpdatePoll' : IDL.Func([IDL.Text, IDL.Vec(IDL.Text)], [], []),
-  'createOrUpdateTournament' : IDL.Func(
-      [IDL.Text, IDL.Nat, Time, IDL.Nat],
-      [],
-      [],
-    ),
+  'getAnnouncements' : IDL.Func([], [IDL.Vec(Announcement)], ['query']),
+  'getBracket' : IDL.Func([], [Bracket], ['query']),
   'getCallerUserProfile' : IDL.Func([], [IDL.Opt(UserProfile)], ['query']),
   'getCallerUserRole' : IDL.Func([], [UserRole], ['query']),
-  'getPoll' : IDL.Func([], [IDL.Opt(Poll)], ['query']),
-  'getTournament' : IDL.Func([], [IDL.Opt(Tournament)], ['query']),
+  'getLeaderboard' : IDL.Func([], [IDL.Vec(LeaderboardRow)], ['query']),
+  'getMatchResults' : IDL.Func([], [IDL.Vec(MatchResult)], ['query']),
+  'getPolls' : IDL.Func([], [IDL.Vec(Poll)], ['query']),
+  'getRules' : IDL.Func([], [IDL.Text], ['query']),
+  'getSettings' : IDL.Func([], [TournamentSettings], ['query']),
+  'getSlotRequests' : IDL.Func([], [IDL.Vec(SlotRequest)], ['query']),
+  'getSlots' : IDL.Func([], [IDL.Vec(Slot)], ['query']),
   'getUserProfile' : IDL.Func(
       [IDL.Principal],
       [IDL.Opt(UserProfile)],
       ['query'],
     ),
-  'getWinners' : IDL.Func([], [IDL.Vec(Winner)], ['query']),
   'isCallerAdmin' : IDL.Func([], [IDL.Bool], ['query']),
+  'rejectSlotRequest' : IDL.Func([IDL.Nat], [], []),
   'saveCallerUserProfile' : IDL.Func([UserProfile], [], []),
-  'updateSlots' : IDL.Func([IDL.Vec(IDL.Text)], [], []),
-  'voteInPoll' : IDL.Func([IDL.Nat], [], []),
+  'setAnnouncements' : IDL.Func([IDL.Vec(Announcement)], [], []),
+  'setBracket' : IDL.Func([Bracket], [], []),
+  'setLeaderboard' : IDL.Func([IDL.Vec(LeaderboardRow)], [], []),
+  'setMatchResults' : IDL.Func([IDL.Vec(MatchResult)], [], []),
+  'setPolls' : IDL.Func([IDL.Vec(Poll)], [], []),
+  'setRules' : IDL.Func([IDL.Text], [], []),
+  'setSlots' : IDL.Func([IDL.Vec(Slot)], [], []),
+  'submitSlotRequest' : IDL.Func([IDL.Text, IDL.Nat], [IDL.Nat], []),
+  'updateSettings' : IDL.Func([TournamentSettings], [], []),
 });
 
 export const idlInitArgs = [];
@@ -66,46 +106,89 @@ export const idlFactory = ({ IDL }) => {
     'user' : IDL.Null,
     'guest' : IDL.Null,
   });
-  const Time = IDL.Int;
+  const Announcement = IDL.Record({
+    'id' : IDL.Nat,
+    'title' : IDL.Text,
+    'date' : IDL.Text,
+    'message' : IDL.Text,
+  });
+  const BracketSlot = IDL.Record({
+    'id' : IDL.Nat,
+    'team1' : IDL.Text,
+    'team2' : IDL.Text,
+  });
+  const Bracket = IDL.Record({
+    'qf' : IDL.Vec(BracketSlot),
+    'sf' : IDL.Vec(BracketSlot),
+    'final' : BracketSlot,
+  });
   const UserProfile = IDL.Record({ 'name' : IDL.Text });
-  const Poll = IDL.Record({
-    'question' : IDL.Text,
-    'votes' : IDL.Vec(IDL.Nat),
-    'options' : IDL.Vec(IDL.Text),
+  const LeaderboardRow = IDL.Record({
+    'd' : IDL.Nat,
+    'l' : IDL.Nat,
+    'w' : IDL.Nat,
+    'ga' : IDL.Nat,
+    'gf' : IDL.Nat,
+    'id' : IDL.Nat,
+    'played' : IDL.Nat,
+    'player' : IDL.Text,
+    'points' : IDL.Nat,
   });
-  const Tournament = IDL.Record({
+  const MatchResult = IDL.Record({
+    'id' : IDL.Nat,
+    'team1' : IDL.Text,
+    'team2' : IDL.Text,
+    'score1' : IDL.Nat,
+    'score2' : IDL.Nat,
+  });
+  const Poll = IDL.Record({ 'id' : IDL.Nat, 'matchup' : IDL.Text });
+  const TournamentSettings = IDL.Record({
+    'status' : IDL.Text,
     'maxSlots' : IDL.Nat,
-    'name' : IDL.Text,
-    'slots' : IDL.Vec(IDL.Text),
-    'entryFee' : IDL.Nat,
-    'dateTime' : Time,
+    'entryFee' : IDL.Text,
+    'dateTime' : IDL.Text,
   });
-  const Winner = IDL.Record({ 'playerName' : IDL.Text, 'position' : IDL.Nat });
+  const SlotRequest = IDL.Record({
+    'id' : IDL.Nat,
+    'status' : IDL.Text,
+    'submittedAt' : IDL.Int,
+    'playerName' : IDL.Text,
+    'slotNumber' : IDL.Nat,
+  });
+  const Slot = IDL.Record({ 'id' : IDL.Nat, 'player' : IDL.Text });
   
   return IDL.Service({
     '_initializeAccessControlWithSecret' : IDL.Func([IDL.Text], [], []),
-    'addWinner' : IDL.Func([IDL.Text, IDL.Nat], [], []),
+    'approveSlotRequest' : IDL.Func([IDL.Nat], [], []),
     'assignCallerUserRole' : IDL.Func([IDL.Principal, UserRole], [], []),
-    'createOrUpdatePoll' : IDL.Func([IDL.Text, IDL.Vec(IDL.Text)], [], []),
-    'createOrUpdateTournament' : IDL.Func(
-        [IDL.Text, IDL.Nat, Time, IDL.Nat],
-        [],
-        [],
-      ),
+    'getAnnouncements' : IDL.Func([], [IDL.Vec(Announcement)], ['query']),
+    'getBracket' : IDL.Func([], [Bracket], ['query']),
     'getCallerUserProfile' : IDL.Func([], [IDL.Opt(UserProfile)], ['query']),
     'getCallerUserRole' : IDL.Func([], [UserRole], ['query']),
-    'getPoll' : IDL.Func([], [IDL.Opt(Poll)], ['query']),
-    'getTournament' : IDL.Func([], [IDL.Opt(Tournament)], ['query']),
+    'getLeaderboard' : IDL.Func([], [IDL.Vec(LeaderboardRow)], ['query']),
+    'getMatchResults' : IDL.Func([], [IDL.Vec(MatchResult)], ['query']),
+    'getPolls' : IDL.Func([], [IDL.Vec(Poll)], ['query']),
+    'getRules' : IDL.Func([], [IDL.Text], ['query']),
+    'getSettings' : IDL.Func([], [TournamentSettings], ['query']),
+    'getSlotRequests' : IDL.Func([], [IDL.Vec(SlotRequest)], ['query']),
+    'getSlots' : IDL.Func([], [IDL.Vec(Slot)], ['query']),
     'getUserProfile' : IDL.Func(
         [IDL.Principal],
         [IDL.Opt(UserProfile)],
         ['query'],
       ),
-    'getWinners' : IDL.Func([], [IDL.Vec(Winner)], ['query']),
     'isCallerAdmin' : IDL.Func([], [IDL.Bool], ['query']),
+    'rejectSlotRequest' : IDL.Func([IDL.Nat], [], []),
     'saveCallerUserProfile' : IDL.Func([UserProfile], [], []),
-    'updateSlots' : IDL.Func([IDL.Vec(IDL.Text)], [], []),
-    'voteInPoll' : IDL.Func([IDL.Nat], [], []),
+    'setAnnouncements' : IDL.Func([IDL.Vec(Announcement)], [], []),
+    'setBracket' : IDL.Func([Bracket], [], []),
+    'setLeaderboard' : IDL.Func([IDL.Vec(LeaderboardRow)], [], []),
+    'setMatchResults' : IDL.Func([IDL.Vec(MatchResult)], [], []),
+    'setPolls' : IDL.Func([IDL.Vec(Poll)], [], []),
+    'setRules' : IDL.Func([IDL.Text], [], []),
+    'setSlots' : IDL.Func([IDL.Vec(Slot)], [], []),
+    'submitSlotRequest' : IDL.Func([IDL.Text, IDL.Nat], [IDL.Nat], []),
+    'updateSettings' : IDL.Func([TournamentSettings], [], []),
   });
 };
 

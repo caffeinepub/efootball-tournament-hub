@@ -89,25 +89,63 @@ export class ExternalBlob {
         return this;
     }
 }
-export interface Tournament {
-    maxSlots: bigint;
-    name: string;
-    slots: Array<string>;
-    entryFee: bigint;
-    dateTime: Time;
-}
-export type Time = bigint;
-export interface Winner {
+export interface SlotRequest {
+    id: bigint;
+    status: string;
+    submittedAt: bigint;
     playerName: string;
-    position: bigint;
+    slotNumber: bigint;
+}
+export interface MatchResult {
+    id: bigint;
+    team1: string;
+    team2: string;
+    score1: bigint;
+    score2: bigint;
+}
+export interface TournamentSettings {
+    status: string;
+    maxSlots: bigint;
+    entryFee: string;
+    dateTime: string;
+}
+export interface Slot {
+    id: bigint;
+    player: string;
+}
+export interface LeaderboardRow {
+    d: bigint;
+    l: bigint;
+    w: bigint;
+    ga: bigint;
+    gf: bigint;
+    id: bigint;
+    played: bigint;
+    player: string;
+    points: bigint;
+}
+export interface Bracket {
+    qf: Array<BracketSlot>;
+    sf: Array<BracketSlot>;
+    final: BracketSlot;
+}
+export interface Announcement {
+    id: bigint;
+    title: string;
+    date: string;
+    message: string;
+}
+export interface Poll {
+    id: bigint;
+    matchup: string;
 }
 export interface UserProfile {
     name: string;
 }
-export interface Poll {
-    question: string;
-    votes: Array<bigint>;
-    options: Array<string>;
+export interface BracketSlot {
+    id: bigint;
+    team1: string;
+    team2: string;
 }
 export enum UserRole {
     admin = "admin",
@@ -116,22 +154,34 @@ export enum UserRole {
 }
 export interface backendInterface {
     _initializeAccessControlWithSecret(userSecret: string): Promise<void>;
-    addWinner(playerName: string, position: bigint): Promise<void>;
+    approveSlotRequest(requestId: bigint): Promise<void>;
     assignCallerUserRole(user: Principal, role: UserRole): Promise<void>;
-    createOrUpdatePoll(question: string, options: Array<string>): Promise<void>;
-    createOrUpdateTournament(name: string, entryFee: bigint, dateTime: Time, maxSlots: bigint): Promise<void>;
+    getAnnouncements(): Promise<Array<Announcement>>;
+    getBracket(): Promise<Bracket>;
     getCallerUserProfile(): Promise<UserProfile | null>;
     getCallerUserRole(): Promise<UserRole>;
-    getPoll(): Promise<Poll | null>;
-    getTournament(): Promise<Tournament | null>;
+    getLeaderboard(): Promise<Array<LeaderboardRow>>;
+    getMatchResults(): Promise<Array<MatchResult>>;
+    getPolls(): Promise<Array<Poll>>;
+    getRules(): Promise<string>;
+    getSettings(): Promise<TournamentSettings>;
+    getSlotRequests(): Promise<Array<SlotRequest>>;
+    getSlots(): Promise<Array<Slot>>;
     getUserProfile(user: Principal): Promise<UserProfile | null>;
-    getWinners(): Promise<Array<Winner>>;
     isCallerAdmin(): Promise<boolean>;
+    rejectSlotRequest(requestId: bigint): Promise<void>;
     saveCallerUserProfile(profile: UserProfile): Promise<void>;
-    updateSlots(slots: Array<string>): Promise<void>;
-    voteInPoll(optionIndex: bigint): Promise<void>;
+    setAnnouncements(items: Array<Announcement>): Promise<void>;
+    setBracket(b: Bracket): Promise<void>;
+    setLeaderboard(rows: Array<LeaderboardRow>): Promise<void>;
+    setMatchResults(results: Array<MatchResult>): Promise<void>;
+    setPolls(newPolls: Array<Poll>): Promise<void>;
+    setRules(r: string): Promise<void>;
+    setSlots(newSlots: Array<Slot>): Promise<void>;
+    submitSlotRequest(playerName: string, slotNumber: bigint): Promise<bigint>;
+    updateSettings(s: TournamentSettings): Promise<void>;
 }
-import type { Poll as _Poll, Tournament as _Tournament, UserProfile as _UserProfile, UserRole as _UserRole } from "./declarations/backend.did.d.ts";
+import type { UserProfile as _UserProfile, UserRole as _UserRole } from "./declarations/backend.did.d.ts";
 export class Backend implements backendInterface {
     constructor(private actor: ActorSubclass<_SERVICE>, private _uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, private _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, private processError?: (error: unknown) => never){}
     async _initializeAccessControlWithSecret(arg0: string): Promise<void> {
@@ -148,17 +198,17 @@ export class Backend implements backendInterface {
             return result;
         }
     }
-    async addWinner(arg0: string, arg1: bigint): Promise<void> {
+    async approveSlotRequest(arg0: bigint): Promise<void> {
         if (this.processError) {
             try {
-                const result = await this.actor.addWinner(arg0, arg1);
+                const result = await this.actor.approveSlotRequest(arg0);
                 return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.addWinner(arg0, arg1);
+            const result = await this.actor.approveSlotRequest(arg0);
             return result;
         }
     }
@@ -176,31 +226,31 @@ export class Backend implements backendInterface {
             return result;
         }
     }
-    async createOrUpdatePoll(arg0: string, arg1: Array<string>): Promise<void> {
+    async getAnnouncements(): Promise<Array<Announcement>> {
         if (this.processError) {
             try {
-                const result = await this.actor.createOrUpdatePoll(arg0, arg1);
+                const result = await this.actor.getAnnouncements();
                 return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.createOrUpdatePoll(arg0, arg1);
+            const result = await this.actor.getAnnouncements();
             return result;
         }
     }
-    async createOrUpdateTournament(arg0: string, arg1: bigint, arg2: Time, arg3: bigint): Promise<void> {
+    async getBracket(): Promise<Bracket> {
         if (this.processError) {
             try {
-                const result = await this.actor.createOrUpdateTournament(arg0, arg1, arg2, arg3);
+                const result = await this.actor.getBracket();
                 return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.createOrUpdateTournament(arg0, arg1, arg2, arg3);
+            const result = await this.actor.getBracket();
             return result;
         }
     }
@@ -232,32 +282,102 @@ export class Backend implements backendInterface {
             return from_candid_UserRole_n4(this._uploadFile, this._downloadFile, result);
         }
     }
-    async getPoll(): Promise<Poll | null> {
+    async getLeaderboard(): Promise<Array<LeaderboardRow>> {
         if (this.processError) {
             try {
-                const result = await this.actor.getPoll();
-                return from_candid_opt_n6(this._uploadFile, this._downloadFile, result);
+                const result = await this.actor.getLeaderboard();
+                return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.getPoll();
-            return from_candid_opt_n6(this._uploadFile, this._downloadFile, result);
+            const result = await this.actor.getLeaderboard();
+            return result;
         }
     }
-    async getTournament(): Promise<Tournament | null> {
+    async getMatchResults(): Promise<Array<MatchResult>> {
         if (this.processError) {
             try {
-                const result = await this.actor.getTournament();
-                return from_candid_opt_n7(this._uploadFile, this._downloadFile, result);
+                const result = await this.actor.getMatchResults();
+                return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.getTournament();
-            return from_candid_opt_n7(this._uploadFile, this._downloadFile, result);
+            const result = await this.actor.getMatchResults();
+            return result;
+        }
+    }
+    async getPolls(): Promise<Array<Poll>> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getPolls();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getPolls();
+            return result;
+        }
+    }
+    async getRules(): Promise<string> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getRules();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getRules();
+            return result;
+        }
+    }
+    async getSettings(): Promise<TournamentSettings> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getSettings();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getSettings();
+            return result;
+        }
+    }
+    async getSlotRequests(): Promise<Array<SlotRequest>> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getSlotRequests();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getSlotRequests();
+            return result;
+        }
+    }
+    async getSlots(): Promise<Array<Slot>> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getSlots();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getSlots();
+            return result;
         }
     }
     async getUserProfile(arg0: Principal): Promise<UserProfile | null> {
@@ -274,20 +394,6 @@ export class Backend implements backendInterface {
             return from_candid_opt_n3(this._uploadFile, this._downloadFile, result);
         }
     }
-    async getWinners(): Promise<Array<Winner>> {
-        if (this.processError) {
-            try {
-                const result = await this.actor.getWinners();
-                return result;
-            } catch (e) {
-                this.processError(e);
-                throw new Error("unreachable");
-            }
-        } else {
-            const result = await this.actor.getWinners();
-            return result;
-        }
-    }
     async isCallerAdmin(): Promise<boolean> {
         if (this.processError) {
             try {
@@ -299,6 +405,20 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.isCallerAdmin();
+            return result;
+        }
+    }
+    async rejectSlotRequest(arg0: bigint): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.rejectSlotRequest(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.rejectSlotRequest(arg0);
             return result;
         }
     }
@@ -316,31 +436,129 @@ export class Backend implements backendInterface {
             return result;
         }
     }
-    async updateSlots(arg0: Array<string>): Promise<void> {
+    async setAnnouncements(arg0: Array<Announcement>): Promise<void> {
         if (this.processError) {
             try {
-                const result = await this.actor.updateSlots(arg0);
+                const result = await this.actor.setAnnouncements(arg0);
                 return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.updateSlots(arg0);
+            const result = await this.actor.setAnnouncements(arg0);
             return result;
         }
     }
-    async voteInPoll(arg0: bigint): Promise<void> {
+    async setBracket(arg0: Bracket): Promise<void> {
         if (this.processError) {
             try {
-                const result = await this.actor.voteInPoll(arg0);
+                const result = await this.actor.setBracket(arg0);
                 return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.voteInPoll(arg0);
+            const result = await this.actor.setBracket(arg0);
+            return result;
+        }
+    }
+    async setLeaderboard(arg0: Array<LeaderboardRow>): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.setLeaderboard(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.setLeaderboard(arg0);
+            return result;
+        }
+    }
+    async setMatchResults(arg0: Array<MatchResult>): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.setMatchResults(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.setMatchResults(arg0);
+            return result;
+        }
+    }
+    async setPolls(arg0: Array<Poll>): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.setPolls(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.setPolls(arg0);
+            return result;
+        }
+    }
+    async setRules(arg0: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.setRules(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.setRules(arg0);
+            return result;
+        }
+    }
+    async setSlots(arg0: Array<Slot>): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.setSlots(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.setSlots(arg0);
+            return result;
+        }
+    }
+    async submitSlotRequest(arg0: string, arg1: bigint): Promise<bigint> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.submitSlotRequest(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.submitSlotRequest(arg0, arg1);
+            return result;
+        }
+    }
+    async updateSettings(arg0: TournamentSettings): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.updateSettings(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.updateSettings(arg0);
             return result;
         }
     }
@@ -349,12 +567,6 @@ function from_candid_UserRole_n4(_uploadFile: (file: ExternalBlob) => Promise<Ui
     return from_candid_variant_n5(_uploadFile, _downloadFile, value);
 }
 function from_candid_opt_n3(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: [] | [_UserProfile]): UserProfile | null {
-    return value.length === 0 ? null : value[0];
-}
-function from_candid_opt_n6(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: [] | [_Poll]): Poll | null {
-    return value.length === 0 ? null : value[0];
-}
-function from_candid_opt_n7(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: [] | [_Tournament]): Tournament | null {
     return value.length === 0 ? null : value[0];
 }
 function from_candid_variant_n5(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {

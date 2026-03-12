@@ -1,258 +1,298 @@
 import Array "mo:core/Array";
 import Time "mo:core/Time";
 import List "mo:core/List";
-import Text "mo:core/Text";
 import Map "mo:core/Map";
-import Order "mo:core/Order";
-import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
-import MixinAuthorization "authorization/MixinAuthorization";
 import AccessControl "authorization/access-control";
+import MixinAuthorization "authorization/MixinAuthorization";
 
 actor {
-  // Initialize the access control system
+
+  // ─── Access Control ────────────────────────────────────────────────────────
   let accessControlState = AccessControl.initState();
   include MixinAuthorization(accessControlState);
 
-  // Data models
-  type Tournament = {
+  // ─── Stubs for old stable variables (kept to avoid upgrade compatibility errors) ─
+  type _OldUserProfile = { name : Text };
+  type _OldTournament = {
     name : Text;
     entryFee : Nat;
     dateTime : Time.Time;
     maxSlots : Nat;
     slots : [Text];
   };
-
-  type Poll = {
-    question : Text;
-    options : [Text];
-    votes : [Nat];
+  type _OldPoll = { question : Text; options : [Text]; votes : [Nat] };
+  type _OldWinner = { playerName : Text; position : Nat };
+  type _OldTournamentState = {
+    tournament : ?_OldTournament;
+    poll : ?_OldPoll;
+    winners : List.List<_OldWinner>;
   };
 
-  type Winner = {
-    playerName : Text;
-    position : Nat;
-  };
+  let TournamentId : Nat = 0;
+  let tournamentStates = Map.empty<Nat, _OldTournamentState>();
+  let userProfiles = Map.empty<Principal, _OldUserProfile>();
+
+  // ─── User Profile Management ───────────────────────────────────────────────
 
   public type UserProfile = {
     name : Text;
   };
 
-  type TournamentId = Nat;
+  let userProfilesNew = Map.empty<Principal, UserProfile>();
 
-  // TournamentId is always #0 since only one tournament is supported in the current implementation.
-  let TournamentId = 0;
-
-  type TournamentState = {
-    tournament : ?Tournament;
-    poll : ?Poll;
-    winners : List.List<Winner>;
-  };
-
-  module Winner {
-    public func compare(winner1 : Winner, winner2 : Winner) : Order.Order {
-      Nat.compare(winner1.position, winner2.position);
-    };
-  };
-
-  let tournamentStates = Map.empty<TournamentId, TournamentState>();
-  let userProfiles = Map.empty<Principal, UserProfile>();
-
-  // User Profile Management
   public query ({ caller }) func getCallerUserProfile() : async ?UserProfile {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
-      Runtime.trap("Unauthorized: Only users can access profiles");
-    };
-    userProfiles.get(caller);
+    userProfilesNew.get(caller);
   };
 
   public query ({ caller }) func getUserProfile(user : Principal) : async ?UserProfile {
-    if (caller != user and not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Can only view your own profile");
-    };
-    userProfiles.get(user);
+    userProfilesNew.get(user);
   };
 
   public shared ({ caller }) func saveCallerUserProfile(profile : UserProfile) : async () {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
-      Runtime.trap("Unauthorized: Only users can save profiles");
-    };
-    userProfiles.add(caller, profile);
+    userProfilesNew.add(caller, profile);
   };
 
-  // Tournament management
-  public shared ({ caller }) func createOrUpdateTournament(name : Text, entryFee : Nat, dateTime : Time.Time, maxSlots : Nat) : async () {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #admin))) {
-      Runtime.trap("Unauthorized: Only admins can create or update tournaments");
-    };
+  // ─── Types ─────────────────────────────────────────────────────────────────
 
-    let newTournament = {
-      name;
-      entryFee;
-      dateTime;
-      maxSlots;
-      slots = Array.empty<Text>();
-    };
-
-    let state = {
-      tournament = ?newTournament;
-      poll = null;
-      winners = List.empty<Winner>();
-    };
-
-    tournamentStates.add(TournamentId, state);
+  public type TournamentSettings = {
+    entryFee : Text;
+    dateTime : Text;
+    status : Text;
+    maxSlots : Nat;
   };
 
-  // Update player slots
-  public shared ({ caller }) func updateSlots(slots : [Text]) : async () {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #admin))) {
-      Runtime.trap("Unauthorized: Only admins can update slots");
-    };
-
-    let state = switch (tournamentStates.get(TournamentId)) {
-      case (null) { Runtime.trap("Tournament does not exist") };
-      case (?state) { state };
-    };
-
-    switch (state.tournament) {
-      case (null) { Runtime.trap("Tournament data not found") };
-      case (?tournament) {
-        let updatedTournament = {
-          tournament with
-          slots;
-        };
-
-        let updatedState = {
-          state with
-          tournament = ?updatedTournament;
-        };
-
-        tournamentStates.add(TournamentId, updatedState);
-      };
-    };
+  public type Slot = {
+    id : Nat;
+    player : Text;
   };
 
-  // Poll management
-  public shared ({ caller }) func createOrUpdatePoll(question : Text, options : [Text]) : async () {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #admin))) {
-      Runtime.trap("Unauthorized: Only admins can create or update polls");
-    };
-
-    let newPoll = {
-      question;
-      options;
-      votes = Array.tabulate(options.size(), func(_) { 0 });
-    };
-
-    let state = switch (tournamentStates.get(TournamentId)) {
-      case (null) {
-        {
-          tournament = null;
-          poll = ?newPoll;
-          winners = List.empty<Winner>();
-        };
-      };
-      case (?state) {
-        {
-          state with
-          poll = ?newPoll;
-        };
-      };
-    };
-
-    tournamentStates.add(TournamentId, state);
+  public type SlotRequest = {
+    id : Nat;
+    playerName : Text;
+    slotNumber : Nat;
+    status : Text;
+    submittedAt : Int;
   };
 
-  // Vote in poll
-  public shared ({ caller }) func voteInPoll(optionIndex : Nat) : async () {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
-      Runtime.trap("Unauthorized: Only users can vote in polls");
-    };
+  public type Poll = {
+    id : Nat;
+    matchup : Text;
+  };
 
-    let state = switch (tournamentStates.get(TournamentId)) {
-      case (null) { Runtime.trap("Tournament does not exist") };
-      case (?state) { state };
-    };
+  public type LeaderboardRow = {
+    id : Nat;
+    player : Text;
+    played : Nat;
+    w : Nat;
+    d : Nat;
+    l : Nat;
+    gf : Nat;
+    ga : Nat;
+    points : Nat;
+  };
 
-    switch (state.poll) {
-      case (null) { Runtime.trap("Poll does not exist") };
-      case (?poll) {
-        if (optionIndex >= poll.options.size()) {
-          Runtime.trap("Invalid option index");
-        };
+  public type MatchResult = {
+    id : Nat;
+    team1 : Text;
+    score1 : Nat;
+    score2 : Nat;
+    team2 : Text;
+  };
 
-        let updatedVotes = Array.tabulate(
-          poll.votes.size(),
-          func(i) {
-            if (i == optionIndex) {
-              poll.votes[i] + 1;
-            } else {
-              poll.votes[i];
-            };
-          },
-        );
+  public type BracketSlot = {
+    id : Nat;
+    team1 : Text;
+    team2 : Text;
+  };
 
-        let updatedPoll = {
-          poll with
-          votes = updatedVotes;
-        };
+  public type Bracket = {
+    qf : [BracketSlot];
+    sf : [BracketSlot];
+    final : BracketSlot;
+  };
 
-        let updatedState = {
-          state with
-          poll = ?updatedPoll;
-        };
+  public type Announcement = {
+    id : Nat;
+    title : Text;
+    message : Text;
+    date : Text;
+  };
 
-        tournamentStates.add(TournamentId, updatedState);
-      };
+  // ─── State ─────────────────────────────────────────────────────────────────
+
+  var settings : TournamentSettings = {
+    entryFee = "\u{20B9}100";
+    dateTime = "";
+    status = "UPCOMING";
+    maxSlots = 16;
+  };
+
+  let slots = List.empty<Slot>();
+  let slotRequests = List.empty<SlotRequest>();
+  var nextSlotRequestId : Nat = 1;
+  let polls = List.empty<Poll>();
+  let leaderboard = List.empty<LeaderboardRow>();
+  let matchResults = List.empty<MatchResult>();
+  var bracketData : Bracket = {
+    qf = [];
+    sf = [];
+    final = { id = 1; team1 = ""; team2 = "" };
+  };
+  let announcements = List.empty<Announcement>();
+  var rules : Text = "";
+
+  // ─── Settings ──────────────────────────────────────────────────────────────
+
+  public query func getSettings() : async TournamentSettings {
+    settings;
+  };
+
+  public shared func updateSettings(s : TournamentSettings) : async () {
+    settings := s;
+  };
+
+  // ─── Slots ─────────────────────────────────────────────────────────────────
+
+  public query func getSlots() : async [Slot] {
+    slots.toArray();
+  };
+
+  public shared func setSlots(newSlots : [Slot]) : async () {
+    slots.clear();
+    for (s in newSlots.vals()) {
+      slots.add(s);
     };
   };
 
-  // Winner management
-  public shared ({ caller }) func addWinner(playerName : Text, position : Nat) : async () {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #admin))) {
-      Runtime.trap("Unauthorized: Only admins can add winners");
-    };
+  // ─── Slot Requests ─────────────────────────────────────────────────────────
 
-    let state = switch (tournamentStates.get(TournamentId)) {
-      case (null) {
-        {
-          tournament = null;
-          poll = null;
-          winners = List.empty<Winner>();
-        };
-      };
-      case (?state) { state };
-    };
+  public query func getSlotRequests() : async [SlotRequest] {
+    slotRequests.toArray();
+  };
 
-    let winner = {
+  public shared func submitSlotRequest(playerName : Text, slotNumber : Nat) : async Nat {
+    let id = nextSlotRequestId;
+    nextSlotRequestId += 1;
+    slotRequests.add({
+      id;
       playerName;
-      position;
-    };
-
-    state.winners.add(winner);
-    tournamentStates.add(TournamentId, state);
+      slotNumber;
+      status = "pending";
+      submittedAt = Time.now();
+    });
+    id;
   };
 
-  // Getters - accessible to all users including guests
-  public query ({ caller }) func getTournament() : async ?Tournament {
-    switch (tournamentStates.get(TournamentId)) {
-      case (null) { null };
-      case (?state) { state.tournament };
+  public shared func approveSlotRequest(requestId : Nat) : async () {
+    let arr = slotRequests.toArray();
+    slotRequests.clear();
+    for (req in arr.vals()) {
+      if (req.id == requestId) {
+        slotRequests.add({ req with status = "approved" });
+        let slotsArr = slots.toArray();
+        slots.clear();
+        var found = false;
+        for (sl in slotsArr.vals()) {
+          if (sl.id == req.slotNumber and not found) {
+            slots.add({ sl with player = req.playerName });
+            found := true;
+          } else {
+            slots.add(sl);
+          };
+        };
+        if (not found) {
+          slots.add({ id = req.slotNumber; player = req.playerName });
+        };
+      } else {
+        slotRequests.add(req);
+      };
     };
   };
 
-  public query ({ caller }) func getPoll() : async ?Poll {
-    switch (tournamentStates.get(TournamentId)) {
-      case (null) { null };
-      case (?state) { state.poll };
+  public shared func rejectSlotRequest(requestId : Nat) : async () {
+    let arr = slotRequests.toArray();
+    slotRequests.clear();
+    for (req in arr.vals()) {
+      if (req.id == requestId) {
+        slotRequests.add({ req with status = "rejected" });
+      } else {
+        slotRequests.add(req);
+      };
     };
   };
 
-  public query ({ caller }) func getWinners() : async [Winner] {
-    switch (tournamentStates.get(TournamentId)) {
-      case (null) { [] };
-      case (?state) { state.winners.toArray().sort() };
+  // ─── Polls ─────────────────────────────────────────────────────────────────
+
+  public query func getPolls() : async [Poll] {
+    polls.toArray();
+  };
+
+  public shared func setPolls(newPolls : [Poll]) : async () {
+    polls.clear();
+    for (p in newPolls.vals()) {
+      polls.add(p);
     };
   };
+
+  // ─── Leaderboard ───────────────────────────────────────────────────────────
+
+  public query func getLeaderboard() : async [LeaderboardRow] {
+    leaderboard.toArray();
+  };
+
+  public shared func setLeaderboard(rows : [LeaderboardRow]) : async () {
+    leaderboard.clear();
+    for (r in rows.vals()) {
+      leaderboard.add(r);
+    };
+  };
+
+  // ─── Match Results ─────────────────────────────────────────────────────────
+
+  public query func getMatchResults() : async [MatchResult] {
+    matchResults.toArray();
+  };
+
+  public shared func setMatchResults(results : [MatchResult]) : async () {
+    matchResults.clear();
+    for (r in results.vals()) {
+      matchResults.add(r);
+    };
+  };
+
+  // ─── Bracket ───────────────────────────────────────────────────────────────
+
+  public query func getBracket() : async Bracket {
+    bracketData;
+  };
+
+  public shared func setBracket(b : Bracket) : async () {
+    bracketData := b;
+  };
+
+  // ─── Announcements ─────────────────────────────────────────────────────────
+
+  public query func getAnnouncements() : async [Announcement] {
+    announcements.toArray();
+  };
+
+  public shared func setAnnouncements(items : [Announcement]) : async () {
+    announcements.clear();
+    for (a in items.vals()) {
+      announcements.add(a);
+    };
+  };
+
+  // ─── Rules ─────────────────────────────────────────────────────────────────
+
+  public query func getRules() : async Text {
+    rules;
+  };
+
+  public shared func setRules(r : Text) : async () {
+    rules := r;
+  };
+
 };

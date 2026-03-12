@@ -9,23 +9,27 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
 import { Toaster } from "@/components/ui/sonner";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { createActorWithConfig } from "@/config";
 import {
-  BarChart3,
+  BarChart2,
   BookOpen,
   Calendar,
+  Check,
   ChevronLeft,
-  ChevronRight,
+  Clock,
   DollarSign,
-  LogOut,
-  MessageSquare,
-  Pencil,
+  Edit2,
+  GitBranch,
+  Home,
+  Loader2,
+  Megaphone,
+  MessageCircle,
+  Play,
   Plus,
+  RefreshCw,
   Settings,
-  Shield,
   Swords,
   Trash2,
   Trophy,
@@ -33,2630 +37,2726 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import {
-  type BracketMatch,
-  type LeaderboardEntry,
-  type MatchResult,
-  type Poll,
-  type PollOption,
-  type Winner,
-  useTournament,
-} from "./hooks/useTournament";
 
+// ─── Types ────────────────────────────────────────────────────────────────────
 type Page =
   | "home"
   | "slots"
-  | "poll"
-  | "winner"
-  | "announcements"
-  | "rules"
+  | "polls"
   | "leaderboard"
   | "results"
-  | "bracket";
+  | "bracket"
+  | "announcements"
+  | "rules";
+type TournamentStatus = "UPCOMING" | "ONGOING" | "COMPLETED";
+type AdminTab =
+  | "slots"
+  | "polls"
+  | "leaderboard"
+  | "results"
+  | "bracket"
+  | "announcements"
+  | "rules"
+  | "themes";
 
-function formatDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString("en-US", {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
+interface Slot {
+  id: number;
+  player: string;
 }
 
-function toLocalDateTimeInput(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  } catch {
-    return "";
-  }
+interface SlotRequest {
+  id: number;
+  playerName: string;
+  slotNumber: number;
+  whatsappNo?: string;
+  status: string;
+  submittedAt: bigint;
 }
 
-// ─── WhatsApp Contact Banner ───────────────────────────────────────────────────
-function WhatsAppBanner() {
+interface Poll {
+  id: number;
+  matchup: string;
+}
+
+interface LeaderboardRow {
+  id: number;
+  player: string;
+  played: number;
+  w: number;
+  d: number;
+  l: number;
+  gf: number;
+  ga: number;
+  points: number;
+}
+
+interface MatchResult {
+  id: number;
+  team1: string;
+  score1: number;
+  score2: number;
+  team2: string;
+}
+
+interface BracketSlot {
+  id: number;
+  team1: string;
+  team2: string;
+}
+
+interface Bracket {
+  qf: BracketSlot[];
+  sf: BracketSlot[];
+  final: BracketSlot;
+}
+
+interface Announcement {
+  id: number;
+  title: string;
+  message: string;
+  date: string;
+}
+
+interface TournamentSettings {
+  entryFee: string;
+  dateTime: string;
+  status: string;
+  maxSlots: number;
+}
+
+// ─── localStorage helpers (themes only) ──────────────────────────────────────
+function loadLocal<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+function saveLocal<T>(key: string, val: T) {
+  localStorage.setItem(key, JSON.stringify(val));
+}
+
+// ─── Defaults ─────────────────────────────────────────────────────────────────
+const DEFAULT_SLOTS: Slot[] = Array.from({ length: 16 }, (_, i) => ({
+  id: i + 1,
+  player: "",
+}));
+const DEFAULT_BRACKET: Bracket = {
+  qf: [
+    { id: 1, team1: "", team2: "" },
+    { id: 2, team1: "", team2: "" },
+    { id: 3, team1: "", team2: "" },
+    { id: 4, team1: "", team2: "" },
+  ],
+  sf: [
+    { id: 1, team1: "", team2: "" },
+    { id: 2, team1: "", team2: "" },
+  ],
+  final: { id: 1, team1: "", team2: "" },
+};
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function App() {
+  const [page, setPage] = useState<Page>("home");
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [adminLoggedIn, setAdminLoggedIn] = useState(false);
+  const [adminPw, setAdminPw] = useState("");
+  const [adminPwError, setAdminPwError] = useState(false);
+  const [adminTab, setAdminTab] = useState<AdminTab | null>(null);
+  const [loading, setLoading] = useState(true);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [actor, setActor] = useState<any>(null);
+
+  // Shared state (backend-sourced)
+  const [status, setStatus] = useState<TournamentStatus>("UPCOMING");
+  const [entryFee, setEntryFee] = useState<string>("₹100");
+  const [tournDate, setTournDate] = useState<string>("2026-04-01 18:00");
+  const [maxSlots, setMaxSlots] = useState<number>(16);
+  const [slots, setSlots] = useState<Slot[]>(DEFAULT_SLOTS);
+  const [slotRequests, setSlotRequests] = useState<SlotRequest[]>([]);
+  const [polls, setPolls] = useState<Poll[]>([]);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
+  const [results, setResults] = useState<MatchResult[]>([]);
+  const [bracket, setBracket] = useState<Bracket>(DEFAULT_BRACKET);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [rules, setRules] = useState<string>(
+    "1. Each player must be present 5 minutes before their match.\n2. No disconnects allowed unless technical failure.\n3. Fair play is mandatory.\n4. Admin decisions are final.",
+  );
+
+  // Themes stored locally (base64 images)
+  const [themeHome, setThemeHome] = useState<string>(() =>
+    loadLocal("theme_home", ""),
+  );
+  const [themeSlots, setThemeSlots] = useState<string>(() =>
+    loadLocal("theme_slots", ""),
+  );
+  const [themePolls, setThemePolls] = useState<string>(() =>
+    loadLocal("theme_polls", ""),
+  );
+  const [themeLeaderboard, setThemeLeaderboard] = useState<string>(() =>
+    loadLocal("theme_leaderboard", ""),
+  );
+  const [themeResults, setThemeResults] = useState<string>(() =>
+    loadLocal("theme_results", ""),
+  );
+
+  useEffect(() => {
+    saveLocal("theme_home", themeHome);
+  }, [themeHome]);
+  useEffect(() => {
+    saveLocal("theme_slots", themeSlots);
+  }, [themeSlots]);
+  useEffect(() => {
+    saveLocal("theme_polls", themePolls);
+  }, [themePolls]);
+  useEffect(() => {
+    saveLocal("theme_leaderboard", themeLeaderboard);
+  }, [themeLeaderboard]);
+  useEffect(() => {
+    saveLocal("theme_results", themeResults);
+  }, [themeResults]);
+
+  const [pollPrize, setPollPrize] = useState<string>(() =>
+    loadLocal("poll_prize", ""),
+  );
+  useEffect(() => {
+    saveLocal("poll_prize", pollPrize);
+  }, [pollPrize]);
+
+  const [quarterFinalPlayers, setQuarterFinalPlayers] = useState<number>(() =>
+    loadLocal("qf_players", 8),
+  );
+  const [semiFinalPlayers, setSemiFinalPlayers] = useState<number>(() =>
+    loadLocal("sf_players", 4),
+  );
+  useEffect(() => {
+    saveLocal("qf_players", quarterFinalPlayers);
+  }, [quarterFinalPlayers]);
+  useEffect(() => {
+    saveLocal("sf_players", semiFinalPlayers);
+  }, [semiFinalPlayers]);
+
+  // Initialize actor on mount
+  useEffect(() => {
+    createActorWithConfig()
+      .then((a: any) => setActor(a))
+      .catch(console.error);
+  }, []);
+
+  // ─── Fetch all data from backend ───────────────────────────────────────
+  const fetchAll = useCallback(
+    async (showToast = false) => {
+      if (!actor) return;
+      const act = actor;
+      try {
+        const [
+          settingsRes,
+          slotsRes,
+          slotRequestsRes,
+          pollsRes,
+          leaderboardRes,
+          resultsRes,
+          bracketRes,
+          announcementsRes,
+          rulesRes,
+        ] = await Promise.all([
+          act.getSettings(),
+          act.getSlots(),
+          act.getSlotRequests(),
+          act.getPolls(),
+          act.getLeaderboard(),
+          act.getMatchResults(),
+          act.getBracket(),
+          act.getAnnouncements(),
+          act.getRules(),
+        ]);
+
+        const s = settingsRes as TournamentSettings;
+        setStatus((s.status as TournamentStatus) || "UPCOMING");
+        setEntryFee(s.entryFee || "₹100");
+        setTournDate(s.dateTime || "2026-04-01 18:00");
+        setMaxSlots(Number(s.maxSlots) || 16);
+
+        const rawSlots = (
+          slotsRes as Array<{ id: bigint; player: string }>
+        ).map((sl) => ({ id: Number(sl.id), player: sl.player }));
+        // Merge with default 16-slot grid
+        const slotMap = new Map(rawSlots.map((sl) => [sl.id, sl.player]));
+        const n = Number(s.maxSlots) || 16;
+        const merged: Slot[] = Array.from({ length: n }, (_, i) => ({
+          id: i + 1,
+          player: slotMap.get(i + 1) || "",
+        }));
+        setSlots(merged);
+
+        setSlotRequests(
+          (
+            slotRequestsRes as Array<{
+              id: bigint;
+              playerName: string;
+              slotNumber: bigint;
+              status: string;
+              submittedAt: bigint;
+            }>
+          ).map((r) => ({
+            id: Number(r.id),
+            playerName: r.playerName,
+            slotNumber: Number(r.slotNumber),
+            status: r.status,
+            submittedAt: r.submittedAt,
+          })),
+        );
+
+        setPolls(
+          (pollsRes as Array<{ id: bigint; matchup: string }>).map((p) => ({
+            id: Number(p.id),
+            matchup: p.matchup,
+          })),
+        );
+
+        setLeaderboard(
+          (
+            leaderboardRes as Array<{
+              id: bigint;
+              player: string;
+              played: bigint;
+              w: bigint;
+              d: bigint;
+              l: bigint;
+              gf: bigint;
+              ga: bigint;
+              points: bigint;
+            }>
+          ).map((r) => ({
+            id: Number(r.id),
+            player: r.player,
+            played: Number(r.played),
+            w: Number(r.w),
+            d: Number(r.d),
+            l: Number(r.l),
+            gf: Number(r.gf),
+            ga: Number(r.ga),
+            points: Number(r.points),
+          })),
+        );
+
+        setResults(
+          (
+            resultsRes as Array<{
+              id: bigint;
+              team1: string;
+              score1: bigint;
+              score2: bigint;
+              team2: string;
+            }>
+          ).map((r) => ({
+            id: Number(r.id),
+            team1: r.team1,
+            score1: Number(r.score1),
+            score2: Number(r.score2),
+            team2: r.team2,
+          })),
+        );
+
+        const br = bracketRes as {
+          qf: Array<{ id: bigint; team1: string; team2: string }>;
+          sf: Array<{ id: bigint; team1: string; team2: string }>;
+          final: { id: bigint; team1: string; team2: string };
+        };
+        setBracket({
+          qf:
+            br.qf.length > 0
+              ? br.qf.map((b) => ({
+                  id: Number(b.id),
+                  team1: b.team1,
+                  team2: b.team2,
+                }))
+              : DEFAULT_BRACKET.qf,
+          sf:
+            br.sf.length > 0
+              ? br.sf.map((b) => ({
+                  id: Number(b.id),
+                  team1: b.team1,
+                  team2: b.team2,
+                }))
+              : DEFAULT_BRACKET.sf,
+          final: {
+            id: Number(br.final.id),
+            team1: br.final.team1,
+            team2: br.final.team2,
+          },
+        });
+
+        setAnnouncements(
+          (
+            announcementsRes as Array<{
+              id: bigint;
+              title: string;
+              message: string;
+              date: string;
+            }>
+          ).map((a) => ({
+            id: Number(a.id),
+            title: a.title,
+            message: a.message,
+            date: a.date,
+          })),
+        );
+
+        if (rulesRes) setRules(rulesRes as string);
+
+        if (showToast) toast.success("Data refreshed");
+      } catch {
+        console.error("Failed to fetch data");
+        if (showToast) toast.error("Failed to refresh data");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [actor],
+  );
+
+  // Initial fetch
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
+  // 10-second polling
+  useEffect(() => {
+    const interval = setInterval(() => fetchAll(), 10000);
+    return () => clearInterval(interval);
+  }, [fetchAll]);
+
+  // ─── Admin actions ─────────────────────────────────────────────────────
+  const handleAdminLogin = () => {
+    if (adminPw === "suraj121") {
+      setAdminLoggedIn(true);
+      setAdminPwError(false);
+      setAdminPw("");
+      toast.success("Admin logged in");
+    } else {
+      setAdminPwError(true);
+    }
+  };
+
+  const handleAdminLogout = () => {
+    setAdminLoggedIn(false);
+    setAdminTab(null);
+    setAdminOpen(false);
+    toast("Logged out");
+  };
+
+  const saveSettings = async (
+    newFee: string,
+    newDate: string,
+    newStatus: TournamentStatus,
+    newMaxSlots?: number,
+  ) => {
+    const act = actor;
+    const slots_count = newMaxSlots ?? maxSlots;
+    try {
+      await act.updateSettings({
+        entryFee: newFee,
+        dateTime: newDate,
+        status: newStatus,
+        maxSlots: BigInt(slots_count),
+      });
+      setEntryFee(newFee);
+      setTournDate(newDate);
+      setStatus(newStatus);
+      if (newMaxSlots !== undefined) setMaxSlots(newMaxSlots);
+      toast.success("Settings saved");
+    } catch {
+      toast.error("Failed to save settings");
+    }
+  };
+
+  const advanceTournament = async () => {
+    const next =
+      status === "UPCOMING"
+        ? "ONGOING"
+        : status === "ONGOING"
+          ? "COMPLETED"
+          : "UPCOMING";
+    await saveSettings(entryFee, tournDate, next);
+    toast.success(`Tournament status: ${next}`);
+  };
+
+  const saveSlots = async (newSlots: Slot[]) => {
+    const act = actor;
+    try {
+      const filled = newSlots.filter((s) => s.player);
+      await act.setSlots(
+        filled.map((s) => ({ id: BigInt(s.id), player: s.player })),
+      );
+      setSlots(newSlots);
+      toast.success("Slots saved");
+    } catch {
+      toast.error("Failed to save slots");
+    }
+  };
+
+  const approveRequest = async (requestId: number) => {
+    const act = actor;
+    try {
+      await act.approveSlotRequest(BigInt(requestId));
+      toast.success("Request approved");
+      fetchAll();
+    } catch {
+      toast.error("Failed to approve request");
+    }
+  };
+
+  const rejectRequest = async (requestId: number) => {
+    const act = actor;
+    try {
+      await act.rejectSlotRequest(BigInt(requestId));
+      toast.success("Request rejected");
+      fetchAll();
+    } catch {
+      toast.error("Failed to reject request");
+    }
+  };
+
+  const savePolls = async (newPolls: Poll[]) => {
+    const act = actor;
+    try {
+      await act.setPolls(
+        newPolls.map((p) => ({ id: BigInt(p.id), matchup: p.matchup })),
+      );
+      setPolls(newPolls);
+      toast.success("Fixtures saved");
+    } catch {
+      toast.error("Failed to save fixtures");
+    }
+  };
+
+  const saveLeaderboard = async (newLb: LeaderboardRow[]) => {
+    const act = actor;
+    try {
+      await act.setLeaderboard(
+        newLb.map((r) => ({
+          id: BigInt(r.id),
+          player: r.player,
+          played: BigInt(r.played),
+          w: BigInt(r.w),
+          d: BigInt(r.d),
+          l: BigInt(r.l),
+          gf: BigInt(r.gf),
+          ga: BigInt(r.ga),
+          points: BigInt(r.points),
+        })),
+      );
+      setLeaderboard(newLb);
+    } catch {
+      toast.error("Failed to save leaderboard");
+    }
+  };
+
+  const saveResults = async (newResults: MatchResult[]) => {
+    const act = actor;
+    try {
+      await act.setMatchResults(
+        newResults.map((r) => ({
+          id: BigInt(r.id),
+          team1: r.team1,
+          score1: BigInt(r.score1),
+          score2: BigInt(r.score2),
+          team2: r.team2,
+        })),
+      );
+      setResults(newResults);
+    } catch {
+      toast.error("Failed to save results");
+    }
+  };
+
+  const saveBracket = async (newBracket: Bracket) => {
+    const act = actor;
+    try {
+      await act.setBracket({
+        qf: newBracket.qf.map((b) => ({
+          id: BigInt(b.id),
+          team1: b.team1,
+          team2: b.team2,
+        })),
+        sf: newBracket.sf.map((b) => ({
+          id: BigInt(b.id),
+          team1: b.team1,
+          team2: b.team2,
+        })),
+        final: {
+          id: BigInt(newBracket.final.id),
+          team1: newBracket.final.team1,
+          team2: newBracket.final.team2,
+        },
+      });
+      setBracket(newBracket);
+      toast.success("Bracket saved");
+    } catch {
+      toast.error("Failed to save bracket");
+    }
+  };
+
+  const saveAnnouncements = async (newAnnouncements: Announcement[]) => {
+    const act = actor;
+    try {
+      await act.setAnnouncements(
+        newAnnouncements.map((a) => ({
+          id: BigInt(a.id),
+          title: a.title,
+          message: a.message,
+          date: a.date,
+        })),
+      );
+      setAnnouncements(newAnnouncements);
+    } catch {
+      toast.error("Failed to save announcements");
+    }
+  };
+
+  const saveRules = async (newRules: string) => {
+    const act = actor;
+    try {
+      await act.setRules(newRules);
+      setRules(newRules);
+      toast.success("Rules saved");
+    } catch {
+      toast.error("Failed to save rules");
+    }
+  };
+
+  const statusColor = {
+    UPCOMING: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+    ONGOING: "bg-green-500/20 text-green-400 border-green-500/30",
+    COMPLETED: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+  }[status];
+
+  const navItems: { id: Page; icon: React.ElementType; label: string }[] = [
+    { id: "home", icon: Home, label: "Home" },
+    { id: "slots", icon: Users, label: "Slots" },
+    { id: "polls", icon: Swords, label: "Polls" },
+    { id: "leaderboard", icon: BarChart2, label: "Board" },
+    { id: "results", icon: Trophy, label: "Results" },
+    { id: "bracket", icon: GitBranch, label: "Bracket" },
+    { id: "announcements", icon: Megaphone, label: "News" },
+    { id: "rules", icon: BookOpen, label: "Rules" },
+  ];
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4">
+        <div className="relative">
+          <div className="w-16 h-16 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
+          <Swords className="w-6 h-6 text-neon absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
+        </div>
+        <p className="font-heading text-neon text-glow-green text-lg tracking-widest uppercase">
+          Loading...
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Connecting to tournament server
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-background text-foreground flex flex-col max-w-md mx-auto">
+      <Toaster />
+      {/* Content */}
+      <main className="flex-1 overflow-y-auto pb-20">
+        {page === "home" && (
+          <HomePage
+            status={status}
+            statusColor={statusColor}
+            entryFee={entryFee}
+            tournDate={tournDate}
+            themeHome={themeHome}
+            onGearClick={() => setAdminOpen(true)}
+            onRefresh={() => fetchAll(true)}
+          />
+        )}
+        {page === "slots" && (
+          <SlotsPage
+            slots={slots}
+            slotRequests={slotRequests}
+            themeSlots={themeSlots}
+            adminLoggedIn={adminLoggedIn}
+            onSaveSlots={saveSlots}
+          />
+        )}
+        {page === "polls" && (
+          <PollsPage
+            polls={polls}
+            themePolls={themePolls}
+            pollPrize={pollPrize}
+          />
+        )}
+        {page === "leaderboard" && (
+          <LeaderboardPage leaderboard={leaderboard} />
+        )}
+        {page === "results" && <ResultsPage results={results} />}
+        {page === "bracket" && <BracketPage bracket={bracket} />}
+        {page === "announcements" && (
+          <AnnouncementsPage announcements={announcements} />
+        )}
+        {page === "rules" && <RulesPage rules={rules} />}
+      </main>
+
+      {/* Bottom Navigation */}
+      <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-card/95 backdrop-blur border-t border-border z-50">
+        <div className="flex overflow-x-auto scrollbar-hide">
+          {navItems.map(({ id, icon: Icon, label }) => (
+            <button
+              type="button"
+              key={id}
+              data-ocid={`nav.${id}.link`}
+              onClick={() => setPage(id)}
+              className={`flex-shrink-0 flex flex-col items-center gap-0.5 px-3 py-2 min-w-[60px] transition-colors ${
+                page === id
+                  ? "text-neon"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              <span className="text-[10px] font-medium">{label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {/* Admin Dialog */}
+      <Dialog open={adminOpen} onOpenChange={setAdminOpen}>
+        <DialogContent
+          className="bg-card border-border max-w-xs mx-auto max-h-[85vh] overflow-y-auto"
+          data-ocid="admin.dialog"
+        >
+          {!adminLoggedIn ? (
+            <>
+              <DialogHeader>
+                <DialogTitle className="font-heading text-neon">
+                  Admin Login
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3 py-2">
+                <Input
+                  data-ocid="admin.input"
+                  type="password"
+                  placeholder="Password"
+                  value={adminPw}
+                  onChange={(e) => setAdminPw(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
+                  className={adminPwError ? "border-destructive" : ""}
+                />
+                {adminPwError && (
+                  <p className="text-destructive text-sm">Incorrect password</p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button
+                  data-ocid="admin.submit_button"
+                  onClick={handleAdminLogin}
+                  className="bg-primary text-primary-foreground w-full"
+                >
+                  Login
+                </Button>
+              </DialogFooter>
+            </>
+          ) : adminTab === null ? (
+            <AdminMenu
+              status={status}
+              onAdvance={advanceTournament}
+              onSelectTab={setAdminTab}
+              onLogout={handleAdminLogout}
+            />
+          ) : (
+            <AdminTabPanel
+              tab={adminTab}
+              onBack={() => setAdminTab(null)}
+              slots={slots}
+              saveSlots={saveSlots}
+              slotRequests={slotRequests}
+              approveRequest={approveRequest}
+              rejectRequest={rejectRequest}
+              polls={polls}
+              savePolls={savePolls}
+              leaderboard={leaderboard}
+              saveLeaderboard={saveLeaderboard}
+              results={results}
+              saveResults={saveResults}
+              bracket={bracket}
+              saveBracket={saveBracket}
+              announcements={announcements}
+              saveAnnouncements={saveAnnouncements}
+              rules={rules}
+              saveRules={saveRules}
+              entryFee={entryFee}
+              tournDate={tournDate}
+              saveSettings={saveSettings}
+              maxSlots={maxSlots}
+              setMaxSlots={setMaxSlots}
+              status={status}
+              themeHome={themeHome}
+              setThemeHome={setThemeHome}
+              themeSlots={themeSlots}
+              setThemeSlots={setThemeSlots}
+              themePolls={themePolls}
+              setThemePolls={setThemePolls}
+              themeLeaderboard={themeLeaderboard}
+              setThemeLeaderboard={setThemeLeaderboard}
+              themeResults={themeResults}
+              setThemeResults={setThemeResults}
+              pollPrize={pollPrize}
+              setPollPrize={setPollPrize}
+              quarterFinalPlayers={quarterFinalPlayers}
+              setQuarterFinalPlayers={setQuarterFinalPlayers}
+              semiFinalPlayers={semiFinalPlayers}
+              setSemiFinalPlayers={setSemiFinalPlayers}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ─── Home Page ────────────────────────────────────────────────────────────────
+function HomePage({
+  status,
+  statusColor,
+  entryFee,
+  tournDate,
+  themeHome,
+  onGearClick,
+  onRefresh,
+}: {
+  status: TournamentStatus;
+  statusColor: string;
+  entryFee: string;
+  tournDate: string;
+  themeHome: string;
+  onGearClick: () => void;
+  onRefresh: () => void;
+}) {
   return (
     <div
-      className="mx-4 mb-3 rounded-xl px-4 py-3 flex items-center gap-3"
-      style={{
-        background: "oklch(0.13 0.06 142 / 0.8)",
-        border: "1px solid oklch(0.4 0.2 142 / 0.5)",
-      }}
+      className="min-h-full relative"
+      style={
+        themeHome
+          ? {
+              backgroundImage: `url(${themeHome})`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+            }
+          : {}
+      }
     >
+      {/* Hero */}
       <div
-        className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
-        style={{ background: "oklch(0.45 0.25 142)" }}
+        className="relative h-56 flex items-end overflow-hidden"
+        style={{
+          backgroundImage:
+            "url(/assets/generated/efootball-hero-bg.dim_1200x800.jpg)",
+          backgroundSize: "cover",
+          backgroundPosition: "center top",
+        }}
       >
-        <svg
-          viewBox="0 0 24 24"
-          className="w-5 h-5"
-          fill="white"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-label="WhatsApp"
-          role="img"
-        >
-          <title>WhatsApp</title>
-          <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
-        </svg>
-      </div>
-      <div className="flex-1 min-w-0">
-        <p
-          className="font-heading font-bold text-xs uppercase tracking-widest"
-          style={{ color: "oklch(0.7 0.25 142)" }}
-        >
-          Player Entry — WhatsApp
-        </p>
-        <div className="flex flex-wrap gap-x-2 mt-0.5">
-          <a
-            href="https://wa.me/917002352569"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-body text-sm font-semibold"
-            style={{ color: "oklch(0.85 0.15 142)" }}
-          >
-            7002352569
-          </a>
-          <span style={{ color: "oklch(0.4 0.05 142)" }}>/</span>
-          <a
-            href="https://wa.me/917099127072"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-body text-sm font-semibold"
-            style={{ color: "oklch(0.85 0.15 142)" }}
-          >
-            7099127072
-          </a>
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/30 to-background" />
+        <div className="relative z-10 w-full px-4 pb-4 flex items-end justify-between">
+          <div>
+            <h1 className="font-heading text-2xl font-bold text-white text-shadow">
+              eFootball
+            </h1>
+            <p className="font-heading text-sm text-neon text-glow-green tracking-widest uppercase">
+              Tournament Hub
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              data-ocid="home.secondary_button"
+              onClick={onRefresh}
+              className="p-2 glass-card rounded-full text-muted-foreground hover:text-neon transition-colors"
+              title="Refresh data"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              data-ocid="home.open_modal_button"
+              onClick={onGearClick}
+              className="p-2 glass-card rounded-full text-muted-foreground hover:text-neon transition-colors"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </div>
-      <div
-        className="mt-2 pt-2 flex justify-center"
-        style={{ borderTop: "1px solid oklch(0.25 0.1 142 / 0.4)" }}
-      >
+
+      {/* Info cards */}
+      <div className="px-4 py-4 space-y-3">
+        <div className="glass-card rounded-xl p-4 flex items-center justify-between animate-fade-slide-up">
+          <span className="text-muted-foreground text-sm">Status</span>
+          <span
+            className={`text-xs font-bold px-3 py-1 rounded-full border ${statusColor}`}
+          >
+            {status}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="glass-card rounded-xl p-4 animate-fade-slide-up">
+            <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+              <DollarSign className="w-3.5 h-3.5" />
+              Entry Fee
+            </div>
+            <p className="font-heading text-lg font-bold text-gold text-glow-gold">
+              {entryFee}
+            </p>
+          </div>
+          <div className="glass-card rounded-xl p-4 animate-fade-slide-up">
+            <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+              <Calendar className="w-3.5 h-3.5" />
+              Date
+            </div>
+            <p className="font-heading text-xs font-bold text-neon">
+              {tournDate}
+            </p>
+          </div>
+        </div>
+
+        {/* WhatsApp Group */}
         <a
           href="https://chat.whatsapp.com/G8yA9aBWqRdE6V7cEpYAtJ?mode=hq1tcla"
           target="_blank"
           rel="noopener noreferrer"
-          data-ocid="home.join_group_button"
-          className="flex items-center gap-2 px-4 py-2 rounded-full font-heading font-bold text-xs uppercase tracking-widest transition-all duration-200 active:scale-95"
-          style={{
-            background: "oklch(0.45 0.25 142)",
-            color: "white",
-          }}
+          data-ocid="home.primary_button"
+          className="flex items-center gap-3 glass-card rounded-xl p-4 border border-green-600/40 hover:border-green-500/60 transition-all animate-fade-slide-up"
         >
-          <Users className="w-3.5 h-3.5" />
-          Join WhatsApp Group
+          <div className="w-10 h-10 rounded-full bg-green-600/20 flex items-center justify-center flex-shrink-0">
+            <MessageCircle className="w-5 h-5 text-green-400" />
+          </div>
+          <div>
+            <p className="font-heading text-sm font-bold text-green-400">
+              Join WhatsApp Group
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Click to join the tournament group
+            </p>
+          </div>
         </a>
-      </div>
-    </div>
-  );
-}
 
-// ─── Section Background Wrapper ───────────────────────────────────────────────
-function SectionBg({
-  bg,
-  children,
-}: { bg: string; children: React.ReactNode }) {
-  return (
-    <div
-      className="relative flex-1 overflow-hidden"
-      style={{
-        backgroundImage: bg ? `url(${bg})` : undefined,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-      }}
-    >
-      {bg && (
-        <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" />
-      )}
-      <div className="relative z-10 h-full overflow-y-auto scrollbar-hide">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-// ─── Home Page ─────────────────────────────────────────────────────────────────
-function HomePage({
-  data,
-  tournamentStarted,
-  onJoin,
-  onAdmin,
-}: {
-  data: ReturnType<typeof useTournament>["data"];
-  tournamentStarted: boolean;
-  onJoin: () => void;
-  onAdmin: () => void;
-}) {
-  const filledSlots = data.slots.filter((s) => s.playerName).length;
-
-  return (
-    <div
-      data-ocid="home.page"
-      className="relative h-full flex flex-col overflow-hidden"
-      style={{
-        backgroundImage: data.themes.home
-          ? `url(${data.themes.home})`
-          : `url('/assets/generated/efootball-hero-bg.dim_1200x800.jpg')`,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-      }}
-    >
-      {/* Dark overlay */}
-      <div className="absolute inset-0 bg-gradient-to-b from-background/60 via-background/50 to-background/90" />
-
-      {/* Top bar */}
-      <div className="relative z-10 flex justify-between items-center p-4 pt-6">
-        <div className="flex items-center gap-2">
-          <Shield
-            className="w-5 h-5"
-            style={{ color: "oklch(0.7 0.25 142)" }}
-          />
-          <span className="font-heading text-sm font-semibold uppercase tracking-widest text-white/70">
-            eFootball Hub
-          </span>
-        </div>
-        <button
-          type="button"
-          data-ocid="home.admin_button"
-          onClick={onAdmin}
-          className="w-10 h-10 rounded-full glass-card flex items-center justify-center hover:border-glow-green transition-all"
-          aria-label="Admin panel"
-        >
-          <Settings className="w-4 h-4 text-white/50" />
-        </button>
-      </div>
-
-      {/* Main content */}
-      <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 text-center gap-6">
-        {/* Status badge */}
-        <div
-          className="px-4 py-1.5 rounded-full font-heading font-black text-sm uppercase tracking-widest"
-          style={
-            tournamentStarted
-              ? {
-                  background: "oklch(0.35 0.15 142 / 0.3)",
-                  border: "1.5px solid oklch(0.7 0.25 142)",
-                  color: "oklch(0.8 0.25 142)",
-                  boxShadow: "0 0 16px oklch(0.7 0.25 142 / 0.4)",
-                }
-              : {
-                  background: "oklch(0.35 0.15 85 / 0.2)",
-                  border: "1.5px solid oklch(0.65 0.2 85)",
-                  color: "oklch(0.8 0.18 85)",
-                }
-          }
-        >
-          {tournamentStarted ? "🟢 LIVE" : "⏳ UPCOMING"}
-        </div>
-
-        {/* Slot availability */}
-        <div className="flex items-center gap-2 text-sm">
-          <span
-            className="w-2 h-2 rounded-full animate-pulse-neon"
-            style={{ background: "oklch(0.7 0.25 142)" }}
-          />
-          <span className="text-white/60">
-            {filledSlots} / {data.maxSlots} players registered
-          </span>
-        </div>
-
-        {/* Title */}
-        <div>
-          <h1
-            className="font-heading text-4xl font-black uppercase leading-tight text-white"
-            style={{ letterSpacing: "-0.02em" }}
-          >
-            {data.name}
-          </h1>
-          <p className="mt-2 font-body text-sm text-white/50 uppercase tracking-[0.2em]">
-            TOURNAMENT
+        {/* About */}
+        <div className="glass-card rounded-xl p-4 space-y-2 animate-fade-slide-up">
+          <h2 className="font-heading text-sm font-bold text-gold">
+            About Tournament
+          </h2>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Welcome to the eFootball Tournament Hub! Compete against players
+            from across the country. Register, check your match schedule, and
+            follow live results. May the best player win!
           </p>
         </div>
-
-        {/* Badges */}
-        <div className="flex flex-wrap gap-3 justify-center">
-          <div className="flex items-center gap-2 px-4 py-2 rounded-full border border-glow-green glass-card">
-            <DollarSign
-              className="w-4 h-4"
-              style={{ color: "oklch(0.7 0.25 142)" }}
-            />
-            <span
-              className="font-heading font-bold text-sm"
-              style={{ color: "oklch(0.7 0.25 142)" }}
-            >
-              Entry: {data.entryFee}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 px-4 py-2 rounded-full border border-glow-gold glass-card">
-            <Calendar
-              className="w-4 h-4"
-              style={{ color: "oklch(0.75 0.2 85)" }}
-            />
-            <span
-              className="font-body text-sm"
-              style={{ color: "oklch(0.75 0.2 85)" }}
-            >
-              {formatDate(data.dateTime)}
-            </span>
-          </div>
-        </div>
-
-        {/* CTA Button */}
-        <button
-          type="button"
-          data-ocid="home.join_button"
-          onClick={onJoin}
-          className="group relative mt-2 px-10 py-4 rounded-xl font-heading font-black uppercase text-lg tracking-widest transition-all duration-200 active:scale-95"
-          style={{
-            background:
-              "linear-gradient(135deg, oklch(0.55 0.25 142) 0%, oklch(0.4 0.2 142) 100%)",
-            color: "oklch(0.95 0.05 142)",
-            boxShadow:
-              "0 0 30px oklch(0.7 0.25 142 / 0.4), 0 4px 20px oklch(0.1 0.02 142 / 0.6)",
-          }}
-        >
-          <span className="flex items-center gap-2">
-            JOIN TOURNAMENT
-            <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-          </span>
-        </button>
-
-        <p className="text-xs text-white/30 uppercase tracking-widest">
-          Open for players worldwide
-        </p>
       </div>
-    </div>
-  );
-}
-
-// ─── Slots Page ────────────────────────────────────────────────────────────────
-function SlotsPage({
-  data,
-  onJoinSlot,
-}: {
-  data: ReturnType<typeof useTournament>["data"];
-  onJoinSlot: (slotId: number, playerName: string) => void;
-}) {
-  const [selectedSlot, setSelectedSlot] = useState<number | null>(null);
-  const [playerName, setPlayerName] = useState("");
-  const filledSlots = data.slots.filter((s) => s.playerName).length;
-
-  const handleSubmit = () => {
-    if (!playerName.trim()) {
-      toast.error("Please enter your name");
-      return;
-    }
-    if (selectedSlot !== null) {
-      onJoinSlot(selectedSlot, playerName.trim());
-      toast.success(`Slot #${selectedSlot} claimed by ${playerName.trim()}!`);
-      setSelectedSlot(null);
-      setPlayerName("");
-    }
-  };
-
-  return (
-    <SectionBg bg={data.themes.slots}>
-      <div data-ocid="slots.page" className="p-4">
-        {/* Header */}
-        <div className="mb-4 pt-2">
-          <h2
-            className="font-heading text-2xl font-black uppercase text-white"
-            style={{ letterSpacing: "-0.01em" }}
-          >
-            Player Slots
-          </h2>
-          <p
-            className="mt-1 font-body text-sm"
-            style={{ color: "oklch(0.6 0.1 220)" }}
-          >
-            {filledSlots} of {data.maxSlots} slots filled
-          </p>
-        </div>
-
-        {/* WhatsApp Banner */}
-        <WhatsAppBanner />
-
-        {/* Progress */}
-        <div className="mb-5 px-0">
-          <Progress
-            value={(filledSlots / data.maxSlots) * 100}
-            className="h-1.5 bg-muted"
-          />
-        </div>
-
-        {/* Slots Grid */}
-        <div className="grid grid-cols-2 gap-3">
-          {data.slots.map((slot, i) => {
-            const isFilled = Boolean(slot.playerName);
-            const ocidIndex = i + 1;
-            return (
-              <button
-                type="button"
-                key={slot.id}
-                data-ocid={`slots.item.${ocidIndex}`}
-                onClick={() => {
-                  if (!isFilled) {
-                    setSelectedSlot(slot.id);
-                    setPlayerName("");
-                  }
-                }}
-                className={`rounded-xl p-3 text-left transition-all duration-200 border ${
-                  isFilled
-                    ? "slot-filled cursor-default"
-                    : "slot-empty hover:border-glow-green cursor-pointer"
-                }`}
-                disabled={isFilled}
-              >
-                <div
-                  className="text-xs font-body uppercase tracking-widest mb-1"
-                  style={{ color: "oklch(0.5 0.05 220)" }}
-                >
-                  Slot #{slot.id}
-                </div>
-                {isFilled ? (
-                  <div>
-                    <div
-                      className="font-heading font-bold text-sm truncate text-glow-green"
-                      style={{ color: "oklch(0.7 0.25 142)" }}
-                    >
-                      {slot.playerName}
-                    </div>
-                    <div
-                      className="text-xs mt-0.5"
-                      style={{ color: "oklch(0.55 0.15 142)" }}
-                    >
-                      ✓ Registered
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    <div
-                      className="font-heading font-semibold text-sm"
-                      style={{ color: "oklch(0.35 0.05 220)" }}
-                    >
-                      Empty
-                    </div>
-                    <div
-                      className="text-xs mt-0.5"
-                      style={{ color: "oklch(0.3 0.03 220)" }}
-                    >
-                      Tap to join
-                    </div>
-                  </div>
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Join Dialog */}
-        <Dialog
-          open={selectedSlot !== null}
-          onOpenChange={(o) => !o && setSelectedSlot(null)}
-        >
-          <DialogContent
-            data-ocid="slots.dialog"
-            className="glass-card border-0 max-w-sm mx-4"
-          >
-            <DialogHeader>
-              <DialogTitle
-                className="font-heading text-xl uppercase"
-                style={{ color: "oklch(0.7 0.25 142)" }}
-              >
-                Join Slot #{selectedSlot}
-              </DialogTitle>
-            </DialogHeader>
-            <div className="py-2">
-              <Label className="text-sm text-white/70 mb-2 block">
-                Your Name
-              </Label>
-              <Input
-                data-ocid="slots.input"
-                placeholder="Enter your name..."
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-                className="bg-muted border-border text-foreground placeholder:text-muted-foreground focus:border-neon"
-                autoFocus
-              />
-            </div>
-            <DialogFooter className="gap-2">
-              <Button
-                data-ocid="slots.cancel_button"
-                variant="ghost"
-                onClick={() => setSelectedSlot(null)}
-                className="flex-1 text-white/60"
-              >
-                Cancel
-              </Button>
-              <Button
-                data-ocid="slots.submit_button"
-                onClick={handleSubmit}
-                className="flex-1 font-heading font-bold uppercase"
-                style={{
-                  background:
-                    "linear-gradient(135deg, oklch(0.55 0.25 142), oklch(0.4 0.2 142))",
-                  color: "oklch(0.95 0.05 142)",
-                }}
-              >
-                CLAIM SLOT
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
-    </SectionBg>
-  );
-}
-
-// ─── Poll Page ─────────────────────────────────────────────────────────────────
-function PollPage({
-  data,
-  onVote,
-}: {
-  data: ReturnType<typeof useTournament>["data"];
-  onVote: (optionId: number) => void;
-}) {
-  const totalVotes = data.poll.options.reduce((sum, o) => sum + o.votes, 0);
-  const hasVoted = data.votedPollOptionId !== null;
-
-  return (
-    <SectionBg bg={data.themes.poll}>
-      <div data-ocid="poll.page" className="p-4">
-        <div className="mb-6 pt-2">
-          <h2
-            className="font-heading text-2xl font-black uppercase text-white"
-            style={{ letterSpacing: "-0.01em" }}
-          >
-            Community Poll
-          </h2>
-          <p
-            className="mt-1 font-body text-sm"
-            style={{ color: "oklch(0.6 0.1 220)" }}
-          >
-            {hasVoted ? "Your vote has been recorded" : "Cast your vote below"}
-          </p>
-        </div>
-
-        <div
-          className="glass-card rounded-2xl p-5 mb-4"
-          style={{ border: "1px solid oklch(0.25 0.05 220 / 0.5)" }}
-        >
-          <h3 className="font-heading text-xl font-bold text-white mb-5">
-            {data.poll.question}
-          </h3>
-
-          <div className="grid grid-cols-2 gap-3">
-            {data.poll.options
-              .filter((o) => o.text.trim())
-              .map((option, i) => {
-                const pct =
-                  totalVotes > 0
-                    ? Math.round((option.votes / totalVotes) * 100)
-                    : 0;
-                const isVoted = data.votedPollOptionId === option.id;
-                const ocidIndex = i + 1;
-
-                return (
-                  <button
-                    type="button"
-                    key={option.id}
-                    data-ocid={`poll.option.${ocidIndex}`}
-                    onClick={() => !hasVoted && onVote(option.id)}
-                    disabled={hasVoted}
-                    className={`relative overflow-hidden rounded-2xl flex flex-col items-center justify-center text-center transition-all duration-200 ${
-                      hasVoted
-                        ? "cursor-default"
-                        : "hover:scale-105 hover:brightness-110 active:scale-95"
-                    }`}
-                    style={{
-                      minHeight: "100px",
-                      padding: "16px 12px",
-                      background: isVoted
-                        ? "oklch(0.12 0.04 142 / 0.85)"
-                        : "oklch(0.1 0.02 220 / 0.8)",
-                      border: isVoted
-                        ? "2px solid oklch(0.55 0.25 142)"
-                        : "1.5px solid oklch(0.25 0.04 220 / 0.6)",
-                      boxShadow: isVoted
-                        ? "0 0 16px oklch(0.55 0.25 142 / 0.4), inset 0 0 20px oklch(0.4 0.2 142 / 0.15)"
-                        : "none",
-                    }}
-                  >
-                    {hasVoted && (
-                      <div
-                        className="absolute inset-0 rounded-2xl transition-all duration-700 ease-out"
-                        style={{
-                          width: `${pct}%`,
-                          background: isVoted
-                            ? "oklch(0.45 0.2 142 / 0.2)"
-                            : "oklch(0.35 0.05 220 / 0.15)",
-                        }}
-                      />
-                    )}
-                    <span
-                      className="relative font-heading font-black text-sm uppercase tracking-wide leading-tight"
-                      style={{
-                        color: isVoted
-                          ? "oklch(0.8 0.28 142)"
-                          : "oklch(0.85 0.05 220)",
-                      }}
-                    >
-                      {option.text}
-                    </span>
-                    {hasVoted && (
-                      <span
-                        className="relative mt-2 font-body font-bold text-xl leading-none"
-                        style={{
-                          color: isVoted
-                            ? "oklch(0.75 0.28 142)"
-                            : "oklch(0.45 0.05 220)",
-                        }}
-                      >
-                        {pct}%
-                      </span>
-                    )}
-                    {!hasVoted && (
-                      <span
-                        className="relative mt-1 font-body text-xs opacity-50"
-                        style={{ color: "oklch(0.55 0.05 220)" }}
-                      >
-                        Tap to vote
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-          </div>
-
-          {hasVoted && (
-            <p
-              className="text-center text-xs mt-4"
-              style={{ color: "oklch(0.45 0.08 220)" }}
-            >
-              Total votes: {totalVotes}
-            </p>
-          )}
-        </div>
-      </div>
-    </SectionBg>
-  );
-}
-
-// ─── Winner Page ───────────────────────────────────────────────────────────────
-function WinnerPage({
-  data,
-}: { data: ReturnType<typeof useTournament>["data"] }) {
-  const sorted = [...data.winners].sort((a, b) => a.place - b.place);
-
-  const placeStyle = (place: number) => {
-    if (place === 1) return "winner-gold";
-    if (place === 2) return "winner-silver";
-    if (place === 3) return "winner-bronze";
-    return "glass-card";
-  };
-
-  const placeMedal = (place: number) => {
-    if (place === 1) return "🥇";
-    if (place === 2) return "🥈";
-    if (place === 3) return "🥉";
-    return `#${place}`;
-  };
-
-  const placeColor = (place: number) => {
-    if (place === 1) return "oklch(0.75 0.2 85)";
-    if (place === 2) return "oklch(0.75 0.05 240)";
-    if (place === 3) return "oklch(0.65 0.15 60)";
-    return "oklch(0.6 0.05 220)";
-  };
-
-  return (
-    <div
-      data-ocid="winner.page"
-      className="h-full overflow-y-auto scrollbar-hide"
-    >
-      <div className="p-4">
-        <div className="mb-6 pt-2">
-          <h2
-            className="font-heading text-2xl font-black uppercase text-white"
-            style={{ letterSpacing: "-0.01em" }}
-          >
-            Winner Board
-          </h2>
-          <p
-            className="mt-1 font-body text-sm"
-            style={{ color: "oklch(0.6 0.1 220)" }}
-          >
-            Tournament results
-          </p>
-        </div>
-
-        {sorted.length === 0 ? (
-          <div
-            data-ocid="winner.empty_state"
-            className="glass-card rounded-2xl p-8 text-center"
-            style={{ border: "1px solid oklch(0.25 0.05 220 / 0.4)" }}
-          >
-            <Trophy
-              className="w-12 h-12 mx-auto mb-3"
-              style={{ color: "oklch(0.35 0.05 220)" }}
-            />
-            <p className="font-heading text-lg font-bold text-white/40">
-              No winners announced yet
-            </p>
-            <p
-              className="font-body text-sm mt-1"
-              style={{ color: "oklch(0.35 0.05 220)" }}
-            >
-              Check back after the tournament
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {sorted.map((winner, i) => {
-              const ocidIndex = i + 1;
-              return (
-                <div
-                  key={winner.place}
-                  data-ocid={`winner.item.${ocidIndex}`}
-                  className={`${placeStyle(winner.place)} rounded-2xl p-4 animate-fade-slide-up`}
-                  style={{ animationDelay: `${i * 0.1}s` }}
-                >
-                  <div className="flex items-center gap-4">
-                    <span className="text-3xl">{placeMedal(winner.place)}</span>
-                    <div className="flex-1">
-                      <div
-                        className="font-heading font-black text-lg"
-                        style={{ color: placeColor(winner.place) }}
-                      >
-                        {winner.playerName}
-                      </div>
-                      {winner.prize && (
-                        <div
-                          className="font-body text-sm"
-                          style={{ color: "oklch(0.6 0.05 220)" }}
-                        >
-                          Prize: {winner.prize}
-                        </div>
-                      )}
-                    </div>
-                    <div
-                      className="font-heading font-black text-2xl"
-                      style={{ color: placeColor(winner.place) }}
-                    >
-                      {winner.place === 1
-                        ? "1st"
-                        : winner.place === 2
-                          ? "2nd"
-                          : winner.place === 3
-                            ? "3rd"
-                            : `${winner.place}th`}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Announcements Page ────────────────────────────────────────────────────────
-function AnnouncementsPage({
-  announcements,
-}: {
-  announcements: ReturnType<typeof useTournament>["announcements"];
-}) {
-  return (
-    <div
-      data-ocid="announcements.page"
-      className="h-full overflow-y-auto scrollbar-hide"
-    >
-      <div className="p-4">
-        <div className="mb-6 pt-2">
-          <h2
-            className="font-heading text-2xl font-black uppercase text-white"
-            style={{ letterSpacing: "-0.01em" }}
-          >
-            Announcements
-          </h2>
-          <p
-            className="mt-1 font-body text-sm"
-            style={{ color: "oklch(0.6 0.1 220)" }}
-          >
-            Latest news and updates
-          </p>
-        </div>
-
-        {announcements.length === 0 ? (
-          <div
-            data-ocid="announcements.empty_state"
-            className="glass-card rounded-2xl p-8 text-center"
-            style={{ border: "1px solid oklch(0.25 0.05 220 / 0.4)" }}
-          >
-            <MessageSquare
-              className="w-12 h-12 mx-auto mb-3"
-              style={{ color: "oklch(0.35 0.05 220)" }}
-            />
-            <p className="font-heading text-lg font-bold text-white/40">
-              No announcements yet
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {announcements.map((ann, i) => (
-              <div
-                key={ann.id}
-                data-ocid={`announcements.item.${i + 1}`}
-                className="glass-card rounded-2xl p-4"
-                style={{ border: "1px solid oklch(0.25 0.08 142 / 0.4)" }}
-              >
-                <div className="flex items-start gap-3">
-                  <div
-                    className="w-2 h-2 rounded-full mt-2 flex-shrink-0 animate-pulse-neon"
-                    style={{ background: "oklch(0.7 0.25 142)" }}
-                  />
-                  <div className="flex-1">
-                    <h3
-                      className="font-heading font-bold text-base"
-                      style={{ color: "oklch(0.85 0.1 142)" }}
-                    >
-                      {ann.title}
-                    </h3>
-                    <p
-                      className="font-body text-sm mt-1 leading-relaxed"
-                      style={{ color: "oklch(0.7 0.05 220)" }}
-                    >
-                      {ann.message}
-                    </p>
-                    <p
-                      className="text-xs mt-2"
-                      style={{ color: "oklch(0.4 0.04 220)" }}
-                    >
-                      {formatDate(ann.createdAt)}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Rules Page ────────────────────────────────────────────────────────────────
-function RulesPage({ rules }: { rules: string }) {
-  return (
-    <div
-      data-ocid="rules.page"
-      className="h-full overflow-y-auto scrollbar-hide"
-    >
-      <div className="p-4">
-        <div className="mb-6 pt-2">
-          <h2
-            className="font-heading text-2xl font-black uppercase text-white"
-            style={{ letterSpacing: "-0.01em" }}
-          >
-            Rules
-          </h2>
-          <p
-            className="mt-1 font-body text-sm"
-            style={{ color: "oklch(0.6 0.1 220)" }}
-          >
-            Tournament regulations
-          </p>
-        </div>
-
-        <div
-          className="glass-card rounded-2xl p-5"
-          style={{ border: "1px solid oklch(0.25 0.05 220 / 0.5)" }}
-        >
-          {rules ? (
-            <div className="flex flex-col gap-3">
-              {rules
-                .split("\n")
-                .filter(Boolean)
-                .map((rule, i) => (
-                  <div
-                    key={rule.slice(0, 20)}
-                    className="flex gap-3 items-start"
-                  >
-                    <span
-                      className="font-heading font-black text-sm mt-0.5 w-6 flex-shrink-0 text-center"
-                      style={{ color: "oklch(0.6 0.2 85)" }}
-                    >
-                      {i + 1}
-                    </span>
-                    <p
-                      className="font-body text-sm leading-relaxed flex-1"
-                      style={{ color: "oklch(0.8 0.05 220)" }}
-                    >
-                      {rule.replace(/^\d+\.\s*/, "")}
-                    </p>
-                  </div>
-                ))}
-            </div>
-          ) : (
-            <p
-              className="text-center font-body text-sm"
-              style={{ color: "oklch(0.4 0.04 220)" }}
-            >
-              No rules set yet
-            </p>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Leaderboard Page ──────────────────────────────────────────────────────────
-function LeaderboardPage({
-  leaderboard,
-}: {
-  leaderboard: LeaderboardEntry[];
-}) {
-  const sorted = [...leaderboard].sort((a, b) => b.points - a.points);
-
-  const rankColor = (rank: number) => {
-    if (rank === 1) return "oklch(0.75 0.2 85)";
-    if (rank === 2) return "oklch(0.72 0.05 240)";
-    if (rank === 3) return "oklch(0.65 0.15 60)";
-    return "oklch(0.55 0.05 220)";
-  };
-
-  const rankBg = (rank: number) => {
-    if (rank === 1) return "oklch(0.12 0.06 85 / 0.6)";
-    if (rank === 2) return "oklch(0.12 0.03 240 / 0.4)";
-    if (rank === 3) return "oklch(0.12 0.05 60 / 0.4)";
-    return "oklch(0.1 0.02 220 / 0.3)";
-  };
-
-  return (
-    <div
-      data-ocid="leaderboard.page"
-      className="h-full overflow-y-auto scrollbar-hide"
-    >
-      <div className="p-4">
-        <div className="mb-6 pt-2">
-          <h2
-            className="font-heading text-2xl font-black uppercase text-white"
-            style={{ letterSpacing: "-0.01em" }}
-          >
-            Leaderboard
-          </h2>
-          <p
-            className="mt-1 font-body text-sm"
-            style={{ color: "oklch(0.6 0.1 220)" }}
-          >
-            Player rankings
-          </p>
-        </div>
-
-        {sorted.length === 0 ? (
-          <div
-            data-ocid="leaderboard.empty_state"
-            className="glass-card rounded-2xl p-8 text-center"
-            style={{ border: "1px solid oklch(0.25 0.05 220 / 0.4)" }}
-          >
-            <BarChart3
-              className="w-12 h-12 mx-auto mb-3"
-              style={{ color: "oklch(0.35 0.05 220)" }}
-            />
-            <p className="font-heading text-lg font-bold text-white/40">
-              No rankings yet
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {sorted.map((entry, i) => (
-              <div
-                key={entry.id}
-                data-ocid={`leaderboard.item.${i + 1}`}
-                className="rounded-xl px-4 py-3 flex items-center gap-3"
-                style={{
-                  background: rankBg(i + 1),
-                  border: `1px solid ${rankColor(i + 1)}33`,
-                }}
-              >
-                <div
-                  className="w-8 h-8 rounded-full flex items-center justify-center font-heading font-black text-sm flex-shrink-0"
-                  style={{
-                    background: rankBg(i + 1),
-                    color: rankColor(i + 1),
-                    border: `1px solid ${rankColor(i + 1)}55`,
-                  }}
-                >
-                  {i + 1 <= 3 ? ["🥇", "🥈", "🥉"][i] : i + 1}
-                </div>
-                <div className="flex-1">
-                  <p
-                    className="font-heading font-bold text-sm"
-                    style={{ color: rankColor(i + 1) }}
-                  >
-                    {entry.playerName}
-                  </p>
-                  <p
-                    className="text-xs mt-0.5"
-                    style={{ color: "oklch(0.45 0.04 220)" }}
-                  >
-                    W:{entry.wins} L:{entry.losses}
-                  </p>
-                </div>
-                <div
-                  className="font-heading font-black text-xl"
-                  style={{ color: rankColor(i + 1) }}
-                >
-                  {entry.points}
-                  <span
-                    className="text-xs font-body ml-0.5"
-                    style={{ color: "oklch(0.4 0.04 220)" }}
-                  >
-                    pts
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Match Results Page ────────────────────────────────────────────────────────
-function MatchResultsPage({
-  matchResults,
-}: {
-  matchResults: MatchResult[];
-}) {
-  return (
-    <div
-      data-ocid="results.page"
-      className="h-full overflow-y-auto scrollbar-hide"
-    >
-      <div className="p-4">
-        <div className="mb-6 pt-2">
-          <h2
-            className="font-heading text-2xl font-black uppercase text-white"
-            style={{ letterSpacing: "-0.01em" }}
-          >
-            Match Results
-          </h2>
-          <p
-            className="mt-1 font-body text-sm"
-            style={{ color: "oklch(0.6 0.1 220)" }}
-          >
-            {matchResults.length} matches played
-          </p>
-        </div>
-
-        {matchResults.length === 0 ? (
-          <div
-            data-ocid="results.empty_state"
-            className="glass-card rounded-2xl p-8 text-center"
-            style={{ border: "1px solid oklch(0.25 0.05 220 / 0.4)" }}
-          >
-            <Swords
-              className="w-12 h-12 mx-auto mb-3"
-              style={{ color: "oklch(0.35 0.05 220)" }}
-            />
-            <p className="font-heading text-lg font-bold text-white/40">
-              No results yet
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {[...matchResults].reverse().map((result, i) => {
-              const p1Won = result.score1 > result.score2;
-              const p2Won = result.score2 > result.score1;
-              const ocidIndex = i + 1;
-              return (
-                <div
-                  key={result.id}
-                  data-ocid={`results.item.${ocidIndex}`}
-                  className="glass-card rounded-2xl p-4"
-                  style={{ border: "1px solid oklch(0.22 0.05 220 / 0.5)" }}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div
-                      className={`flex-1 text-right font-heading font-bold text-sm ${
-                        p1Won ? "" : ""
-                      }`}
-                      style={{
-                        color: p1Won
-                          ? "oklch(0.7 0.25 142)"
-                          : "oklch(0.6 0.05 220)",
-                      }}
-                    >
-                      {result.player1}
-                    </div>
-                    <div
-                      className="flex items-center gap-2 px-3 py-1 rounded-lg"
-                      style={{ background: "oklch(0.1 0.03 220)" }}
-                    >
-                      <span
-                        className="font-heading font-black text-lg"
-                        style={{
-                          color: p1Won
-                            ? "oklch(0.7 0.25 142)"
-                            : "oklch(0.55 0.05 220)",
-                        }}
-                      >
-                        {result.score1}
-                      </span>
-                      <span
-                        className="font-body text-xs"
-                        style={{ color: "oklch(0.35 0.03 220)" }}
-                      >
-                        –
-                      </span>
-                      <span
-                        className="font-heading font-black text-lg"
-                        style={{
-                          color: p2Won
-                            ? "oklch(0.7 0.25 142)"
-                            : "oklch(0.55 0.05 220)",
-                        }}
-                      >
-                        {result.score2}
-                      </span>
-                    </div>
-                    <div
-                      className="flex-1 font-heading font-bold text-sm"
-                      style={{
-                        color: p2Won
-                          ? "oklch(0.7 0.25 142)"
-                          : "oklch(0.6 0.05 220)",
-                      }}
-                    >
-                      {result.player2}
-                    </div>
-                  </div>
-                  <p
-                    className="text-center text-xs mt-2"
-                    style={{ color: "oklch(0.35 0.04 220)" }}
-                  >
-                    {formatDate(result.date)}
-                  </p>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Bracket Page ──────────────────────────────────────────────────────────────
-function BracketPage({
-  bracketMatches,
-}: {
-  bracketMatches: BracketMatch[];
-}) {
-  const rounds = Array.from(new Set(bracketMatches.map((m) => m.round))).sort(
-    (a, b) => a - b,
-  );
-
-  const roundLabel = (round: number, totalRounds: number) => {
-    const fromEnd = totalRounds - round;
-    if (fromEnd === 0) return "Final";
-    if (fromEnd === 1) return "Semi-Final";
-    if (fromEnd === 2) return "Quarter-Final";
-    return `Round ${round}`;
-  };
-
-  return (
-    <div
-      data-ocid="bracket.page"
-      className="h-full overflow-y-auto scrollbar-hide"
-    >
-      <div className="p-4">
-        <div className="mb-6 pt-2">
-          <h2
-            className="font-heading text-2xl font-black uppercase text-white"
-            style={{ letterSpacing: "-0.01em" }}
-          >
-            Knockout Bracket
-          </h2>
-          <p
-            className="mt-1 font-body text-sm"
-            style={{ color: "oklch(0.6 0.1 220)" }}
-          >
-            Tournament bracket
-          </p>
-        </div>
-
-        {bracketMatches.length === 0 ? (
-          <div
-            data-ocid="bracket.empty_state"
-            className="glass-card rounded-2xl p-8 text-center"
-            style={{ border: "1px solid oklch(0.25 0.05 220 / 0.4)" }}
-          >
-            <Swords
-              className="w-12 h-12 mx-auto mb-3"
-              style={{ color: "oklch(0.35 0.05 220)" }}
-            />
-            <p className="font-heading text-lg font-bold text-white/40">
-              Bracket not set up yet
-            </p>
-            <p
-              className="font-body text-sm mt-1"
-              style={{ color: "oklch(0.35 0.05 220)" }}
-            >
-              Admin will configure the bracket soon
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-6">
-            {rounds.map((round) => {
-              const roundMatches = bracketMatches
-                .filter((m) => m.round === round)
-                .sort((a, b) => a.position - b.position);
-              return (
-                <div key={round}>
-                  <div
-                    className="text-xs font-heading font-bold uppercase tracking-widest mb-3"
-                    style={{ color: "oklch(0.6 0.15 85)" }}
-                  >
-                    {roundLabel(round, rounds.length)}
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    {roundMatches.map((match, mi) => (
-                      <div
-                        key={match.id}
-                        data-ocid={`bracket.item.${mi + 1}`}
-                        className="glass-card rounded-xl overflow-hidden"
-                        style={{
-                          border: "1px solid oklch(0.22 0.05 220 / 0.5)",
-                        }}
-                      >
-                        {[match.player1, match.player2].map((player, pi) => {
-                          const isWinner = player && player === match.winner;
-                          const isLoser =
-                            match.winner && player && player !== match.winner;
-                          return (
-                            <div
-                              key={pi === 0 ? "player1" : "player2"}
-                              className={`flex items-center px-4 py-2.5 ${
-                                pi === 0 ? "border-b" : ""
-                              }`}
-                              style={{
-                                borderColor: "oklch(0.18 0.04 220 / 0.5)",
-                                background: isWinner
-                                  ? "oklch(0.12 0.05 142 / 0.5)"
-                                  : "transparent",
-                              }}
-                            >
-                              <span
-                                className="flex-1 font-heading font-bold text-sm"
-                                style={{
-                                  color: isWinner
-                                    ? "oklch(0.7 0.25 142)"
-                                    : isLoser
-                                      ? "oklch(0.35 0.04 220)"
-                                      : player
-                                        ? "oklch(0.75 0.05 220)"
-                                        : "oklch(0.3 0.03 220)",
-                                }}
-                              >
-                                {player || "TBD"}
-                              </span>
-                              {isWinner && (
-                                <Badge
-                                  className="text-xs"
-                                  style={{
-                                    background: "oklch(0.45 0.25 142 / 0.3)",
-                                    color: "oklch(0.7 0.25 142)",
-                                    border:
-                                      "1px solid oklch(0.5 0.2 142 / 0.4)",
-                                  }}
-                                >
-                                  WIN
-                                </Badge>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Admin Panel ───────────────────────────────────────────────────────────────
-function AdminPanel({
-  data,
-  announcements,
-  rules,
-  leaderboard,
-  matchResults,
-  bracketMatches,
-  onClose,
-  onUpdateSettings,
-  onUpdateSlot,
-  onClearSlot,
-  onUpdatePoll,
-  onResetVotes,
-  onUpdateWinners,
-  onUpdateTheme,
-  onAddAnnouncement,
-  onDeleteAnnouncement,
-  onUpdateRules,
-  onUpdateLeaderboard,
-  onAddMatchResult,
-  onDeleteMatchResult,
-  onUpdateBracket,
-  onStartTournament,
-  onStopTournament,
-  tournamentStarted,
-}: {
-  data: ReturnType<typeof useTournament>["data"];
-  announcements: ReturnType<typeof useTournament>["announcements"];
-  rules: string;
-  leaderboard: LeaderboardEntry[];
-  matchResults: MatchResult[];
-  bracketMatches: BracketMatch[];
-  onClose: () => void;
-  onUpdateSettings: ReturnType<
-    typeof useTournament
-  >["updateTournamentSettings"];
-  onUpdateSlot: ReturnType<typeof useTournament>["updateSlot"];
-  onClearSlot: ReturnType<typeof useTournament>["clearSlot"];
-  onUpdatePoll: ReturnType<typeof useTournament>["updatePoll"];
-  onResetVotes: ReturnType<typeof useTournament>["resetVotes"];
-  onUpdateWinners: ReturnType<typeof useTournament>["updateWinners"];
-  onUpdateTheme: ReturnType<typeof useTournament>["updateTheme"];
-  onAddAnnouncement: ReturnType<typeof useTournament>["addAnnouncement"];
-  onDeleteAnnouncement: ReturnType<typeof useTournament>["deleteAnnouncement"];
-  onUpdateRules: ReturnType<typeof useTournament>["updateRules"];
-  onUpdateLeaderboard: ReturnType<typeof useTournament>["updateLeaderboard"];
-  onAddMatchResult: ReturnType<typeof useTournament>["addMatchResult"];
-  onDeleteMatchResult: ReturnType<typeof useTournament>["deleteMatchResult"];
-  onUpdateBracket: ReturnType<typeof useTournament>["updateBracket"];
-  onStartTournament: () => void;
-  onStopTournament: () => void;
-  tournamentStarted: boolean;
-}) {
-  const [authed, setAuthed] = useState(false);
-  const [pw, setPw] = useState("");
-  const [pwError, setPwError] = useState("");
-
-  // Settings state
-  const [tName, setTName] = useState(data.name);
-  const [tFee, setTFee] = useState(data.entryFee);
-  const [tDate, setTDate] = useState(toLocalDateTimeInput(data.dateTime));
-  const [tSlots, setTSlots] = useState(String(data.maxSlots));
-
-  // Poll state
-  const [pollQ, setPollQ] = useState(data.poll.question);
-  const [pollOpts, setPollOpts] = useState<PollOption[]>(data.poll.options);
-
-  // Winners state
-  const [winners, setWinners] = useState<Winner[]>(data.winners);
-
-  // Announcement state
-  const [annTitle, setAnnTitle] = useState("");
-  const [annMessage, setAnnMessage] = useState("");
-
-  // Rules state
-  const [rulesText, setRulesText] = useState(rules);
-
-  // Leaderboard state
-  const [lbEntries, setLbEntries] = useState<LeaderboardEntry[]>(leaderboard);
-
-  // Match result state
-  const [mr_p1, setMrP1] = useState("");
-  const [mr_p2, setMrP2] = useState("");
-  const [mr_s1, setMrS1] = useState("0");
-  const [mr_s2, setMrS2] = useState("0");
-
-  // Bracket state
-  const [bracketEntries, setBracketEntries] =
-    useState<BracketMatch[]>(bracketMatches);
-
-  const fileInputRef = useRef<{ [k: string]: HTMLInputElement | null }>({});
-
-  const handleAuth = () => {
-    if (pw === "suraj121") {
-      setAuthed(true);
-      setPwError("");
-    } else {
-      setPwError("Incorrect password");
-    }
-  };
-
-  const handleImageUpload = useCallback(
-    (section: "home" | "slots" | "poll", file: File) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const base64 = e.target?.result as string;
-        onUpdateTheme(section, base64);
-        toast.success(`${section} background updated!`);
-      };
-      reader.readAsDataURL(file);
-    },
-    [onUpdateTheme],
-  );
-
-  const saveSettings = () => {
-    onUpdateSettings({
-      name: tName,
-      entryFee: tFee,
-      dateTime: new Date(tDate).toISOString(),
-      maxSlots: Math.max(1, Math.min(64, Number.parseInt(tSlots) || 16)),
-    });
-    toast.success("Settings saved!");
-  };
-
-  const savePoll = () => {
-    onUpdatePoll({
-      question: pollQ,
-      options: pollOpts.filter((o) => o.text.trim()),
-    });
-    toast.success("Poll updated!");
-  };
-
-  const _addPollOption = () => {
-    const nextId = Math.max(0, ...pollOpts.map((o) => o.id)) + 1;
-    setPollOpts((prev) => [...prev, { id: nextId, text: "", votes: 0 }]);
-  };
-
-  const _removePollOption = (id: number) => {
-    setPollOpts((prev) => prev.filter((o) => o.id !== id));
-  };
-
-  const saveWinners = () => {
-    onUpdateWinners(winners.filter((w) => w.playerName.trim()));
-    toast.success("Winners saved!");
-  };
-
-  const addWinner = () => {
-    const nextPlace = winners.length + 1;
-    setWinners((prev) => [
-      ...prev,
-      { place: nextPlace, playerName: "", prize: "" },
-    ]);
-  };
-
-  const postAnnouncement = () => {
-    if (!annTitle.trim() || !annMessage.trim()) {
-      toast.error("Enter both title and message");
-      return;
-    }
-    onAddAnnouncement(annTitle.trim(), annMessage.trim());
-    setAnnTitle("");
-    setAnnMessage("");
-    toast.success("Announcement posted!");
-  };
-
-  const saveRules = () => {
-    onUpdateRules(rulesText);
-    toast.success("Rules saved!");
-  };
-
-  const saveLeaderboard = () => {
-    onUpdateLeaderboard(lbEntries.filter((e) => e.playerName.trim()));
-    toast.success("Leaderboard saved!");
-  };
-
-  const addLbEntry = () => {
-    setLbEntries((prev) => [
-      ...prev,
-      { id: Date.now(), playerName: "", points: 0, wins: 0, losses: 0 },
-    ]);
-  };
-
-  const addMatchResult = () => {
-    if (!mr_p1.trim() || !mr_p2.trim()) {
-      toast.error("Enter both player names");
-      return;
-    }
-    onAddMatchResult(
-      mr_p1.trim(),
-      mr_p2.trim(),
-      Number(mr_s1) || 0,
-      Number(mr_s2) || 0,
-    );
-    setMrP1("");
-    setMrP2("");
-    setMrS1("0");
-    setMrS2("0");
-    toast.success("Result added!");
-  };
-
-  const saveBracket = () => {
-    onUpdateBracket(bracketEntries);
-    toast.success("Bracket saved!");
-  };
-
-  const addBracketMatch = () => {
-    const maxRound =
-      bracketEntries.length > 0
-        ? Math.max(...bracketEntries.map((m) => m.round))
-        : 0;
-    const sameRound = bracketEntries.filter((m) => m.round === maxRound);
-    setBracketEntries((prev) => [
-      ...prev,
-      {
-        id: Date.now(),
-        round: maxRound + 1,
-        position: sameRound.length + 1,
-        player1: "",
-        player2: "",
-        winner: "",
-      },
-    ]);
-  };
-
-  if (!authed) {
-    return (
-      <div
-        data-ocid="admin.panel"
-        className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 backdrop-blur-md"
-      >
-        <div className="glass-card rounded-2xl p-6 w-full max-w-sm mx-4 animate-scale-in">
-          <div className="flex justify-between items-center mb-6">
-            <h2
-              className="font-heading text-xl font-black uppercase"
-              style={{ color: "oklch(0.75 0.2 85)" }}
-            >
-              Admin Access
-            </h2>
-            <button
-              type="button"
-              data-ocid="admin.close_button"
-              onClick={onClose}
-              className="text-white/40 hover:text-white/80 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-          <div className="mb-4">
-            <Label className="text-sm text-white/60 mb-2 block">Password</Label>
-            <Input
-              data-ocid="admin.password_input"
-              type="password"
-              placeholder="Enter admin password"
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleAuth()}
-              className="bg-muted border-border"
-              autoFocus
-            />
-            {pwError && (
-              <p
-                className="text-xs mt-1"
-                style={{ color: "oklch(0.6 0.2 20)" }}
-              >
-                {pwError}
-              </p>
-            )}
-          </div>
-          <Button
-            data-ocid="admin.submit_button"
-            onClick={handleAuth}
-            className="w-full font-heading font-bold uppercase"
-            style={{
-              background:
-                "linear-gradient(135deg, oklch(0.55 0.2 85), oklch(0.4 0.18 85))",
-              color: "oklch(0.95 0.05 85)",
-            }}
-          >
-            ENTER
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      data-ocid="admin.panel"
-      className="fixed inset-0 z-50 flex flex-col bg-background"
-    >
-      {/* Header */}
-      <div
-        className="flex items-center justify-between px-4 py-4 border-b"
-        style={{ borderColor: "oklch(0.2 0.04 220)" }}
-      >
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            data-ocid="admin.back_button"
-            onClick={onClose}
-            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-muted transition-colors mr-1"
-          >
-            <ChevronLeft className="w-5 h-5 text-white/60" />
-          </button>
-          <Settings
-            className="w-5 h-5"
-            style={{ color: "oklch(0.75 0.2 85)" }}
-          />
-          <h2
-            className="font-heading text-lg font-black uppercase"
-            style={{ color: "oklch(0.75 0.2 85)" }}
-          >
-            Admin Panel
-          </h2>
-        </div>
-        <button
-          type="button"
-          data-ocid="admin.close_button"
-          onClick={onClose}
-          className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-muted transition-colors"
-        >
-          <X className="w-5 h-5 text-white/60" />
-        </button>
-      </div>
-
-      {/* Tabs */}
-      <Tabs
-        defaultValue="settings"
-        className="flex-1 flex flex-col overflow-hidden"
-      >
-        <TabsList
-          className="flex overflow-x-auto scrollbar-hide px-3 pt-2 pb-0 bg-transparent h-auto gap-1 justify-start"
-          style={{ borderBottom: "1px solid oklch(0.18 0.04 220)" }}
-        >
-          {[
-            "settings",
-            "slots",
-            "poll",
-            "winners",
-            "announce",
-            "rules",
-            "leaderboard",
-            "results",
-            "bracket",
-            "themes",
-          ].map((tab) => (
-            <TabsTrigger
-              key={tab}
-              value={tab}
-              data-ocid="admin.tab"
-              className="font-heading font-bold text-xs uppercase px-3 py-2 rounded-t-md data-[state=active]:bg-muted data-[state=active]:text-gold flex-shrink-0"
-            >
-              {tab}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-
-        <div className="flex-1 overflow-y-auto scrollbar-hide">
-          {/* Settings Tab */}
-          <TabsContent value="settings" className="p-4 space-y-4 mt-0">
-            <div>
-              <Label className="text-xs text-white/50 uppercase tracking-widest mb-1 block">
-                Tournament Name
-              </Label>
-              <Input
-                data-ocid="admin.settings.input"
-                value={tName}
-                onChange={(e) => setTName(e.target.value)}
-                className="bg-muted border-border"
-              />
-            </div>
-            <div>
-              <Label className="text-xs text-white/50 uppercase tracking-widest mb-1 block">
-                Entry Fee
-              </Label>
-              <Input
-                value={tFee}
-                onChange={(e) => setTFee(e.target.value)}
-                className="bg-muted border-border"
-                placeholder="$5.00"
-              />
-            </div>
-            <div>
-              <Label className="text-xs text-white/50 uppercase tracking-widest mb-1 block">
-                Date & Time
-              </Label>
-              <Input
-                type="datetime-local"
-                value={tDate}
-                onChange={(e) => setTDate(e.target.value)}
-                className="bg-muted border-border"
-              />
-            </div>
-            <div>
-              <Label className="text-xs text-white/50 uppercase tracking-widest mb-1 block">
-                Max Slots
-              </Label>
-              <Input
-                type="number"
-                min="1"
-                max="64"
-                value={tSlots}
-                onChange={(e) => setTSlots(e.target.value)}
-                className="bg-muted border-border"
-              />
-            </div>
-            <Button
-              data-ocid="admin.save_button"
-              onClick={saveSettings}
-              className="w-full font-heading font-bold uppercase"
-              style={{
-                background: "oklch(0.45 0.2 85)",
-                color: "oklch(0.95 0.05 85)",
-              }}
-            >
-              SAVE SETTINGS
-            </Button>
-
-            {/* Tournament Start/Stop */}
-            <div className="pt-2">
-              <Label className="text-xs text-white/50 uppercase tracking-widest mb-2 block">
-                Tournament Status
-              </Label>
-              <button
-                type="button"
-                data-ocid="admin.settings.start_button"
-                onClick={
-                  tournamentStarted ? onStopTournament : onStartTournament
-                }
-                className="w-full py-4 rounded-xl font-heading font-black uppercase text-base tracking-widest transition-all duration-200 active:scale-95"
-                style={
-                  tournamentStarted
-                    ? {
-                        background:
-                          "linear-gradient(135deg, oklch(0.45 0.25 20) 0%, oklch(0.35 0.2 20) 100%)",
-                        color: "oklch(0.95 0.05 20)",
-                        boxShadow: "0 0 20px oklch(0.6 0.25 20 / 0.3)",
-                      }
-                    : {
-                        background:
-                          "linear-gradient(135deg, oklch(0.45 0.25 142) 0%, oklch(0.35 0.2 142) 100%)",
-                        color: "oklch(0.95 0.05 142)",
-                        boxShadow: "0 0 20px oklch(0.7 0.25 142 / 0.3)",
-                      }
-                }
-              >
-                {tournamentStarted ? "⏹ STOP TOURNAMENT" : "▶ START TOURNAMENT"}
-              </button>
-            </div>
-          </TabsContent>
-
-          {/* Slots Tab */}
-          <TabsContent value="slots" className="p-4 mt-0">
-            <div className="space-y-2">
-              {data.slots.map((slot) => (
-                <div
-                  key={slot.id}
-                  className="flex items-center gap-2 glass-card rounded-lg px-3 py-2"
-                >
-                  <span
-                    className="text-xs font-body"
-                    style={{ color: "oklch(0.45 0.05 220)" }}
-                  >
-                    #{slot.id}
-                  </span>
-                  <Input
-                    className="flex-1 h-8 text-sm bg-transparent border-0 border-b rounded-none px-1"
-                    value={slot.playerName}
-                    placeholder="Empty"
-                    onChange={(e) => onUpdateSlot(slot.id, e.target.value)}
-                  />
-                  {slot.playerName && (
-                    <button
-                      type="button"
-                      onClick={() => onClearSlot(slot.id)}
-                      className="text-white/30 hover:text-red-400 transition-colors"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </TabsContent>
-
-          {/* Poll Tab */}
-          <TabsContent value="poll" className="p-4 space-y-4 mt-0">
-            <div>
-              <Label className="text-xs text-white/50 uppercase tracking-widest mb-1 block">
-                Question
-              </Label>
-              <Input
-                value={pollQ}
-                onChange={(e) => setPollQ(e.target.value)}
-                className="bg-muted border-border"
-              />
-            </div>
-            <div>
-              <Label className="text-xs text-white/50 uppercase tracking-widest mb-2 block">
-                Options (4×3 Grid)
-              </Label>
-              <div className="grid grid-cols-4 gap-2">
-                {Array.from({ length: 12 }, (_, i) => {
-                  const opt = pollOpts[i];
-                  return (
-                    <div
-                      key={
-                        [
-                          "b0",
-                          "b1",
-                          "b2",
-                          "b3",
-                          "b4",
-                          "b5",
-                          "b6",
-                          "b7",
-                          "b8",
-                          "b9",
-                          "b10",
-                          "b11",
-                        ][i]
-                      }
-                      className="rounded-xl p-2 border text-xs flex flex-col gap-1"
-                      style={{
-                        background: "oklch(0.1 0.03 220)",
-                        borderColor: "oklch(0.25 0.05 220)",
-                      }}
-                    >
-                      <span className="text-white/30 font-heading font-bold text-center">
-                        {i + 1}
-                      </span>
-                      <Input
-                        data-ocid={`admin.poll.option.${i + 1}`}
-                        value={opt ? opt.text : ""}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setPollOpts((prev) => {
-                            const arr = [...prev];
-                            if (arr[i]) {
-                              arr[i] = { ...arr[i], text: val };
-                            } else {
-                              const nextId =
-                                Math.max(0, ...arr.map((o) => o.id)) + 1;
-                              arr[i] = { id: nextId, text: val, votes: 0 };
-                            }
-                            return arr;
-                          });
-                        }}
-                        className="h-8 text-xs bg-transparent border-0 border-b rounded-none px-1 text-center"
-                        placeholder="..."
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <Button
-                data-ocid="admin.poll.save_button"
-                onClick={savePoll}
-                className="flex-1 font-heading font-bold uppercase text-xs"
-                style={{
-                  background: "oklch(0.45 0.2 85)",
-                  color: "oklch(0.95 0.05 85)",
-                }}
-              >
-                SAVE POLL
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={onResetVotes}
-                className="flex-1 text-xs text-white/40"
-              >
-                Reset Votes
-              </Button>
-            </div>
-          </TabsContent>
-
-          {/* Winners Tab */}
-          <TabsContent value="winners" className="p-4 space-y-4 mt-0">
-            <div className="space-y-3">
-              {winners.map((w, i) => (
-                <div
-                  key={w.place}
-                  className="glass-card rounded-xl p-3 space-y-2"
-                >
-                  <div className="text-xs text-white/40 uppercase tracking-widest">
-                    Place #{w.place}
-                  </div>
-                  <Input
-                    placeholder="Player name"
-                    value={w.playerName}
-                    onChange={(e) =>
-                      setWinners((prev) =>
-                        prev.map((winner, idx) =>
-                          idx === i
-                            ? { ...winner, playerName: e.target.value }
-                            : winner,
-                        ),
-                      )
-                    }
-                    className="bg-muted border-border"
-                  />
-                  <Input
-                    placeholder="Prize (optional)"
-                    value={w.prize}
-                    onChange={(e) =>
-                      setWinners((prev) =>
-                        prev.map((winner, idx) =>
-                          idx === i
-                            ? { ...winner, prize: e.target.value }
-                            : winner,
-                        ),
-                      )
-                    }
-                    className="bg-muted border-border"
-                  />
-                </div>
-              ))}
-              <Button
-                variant="ghost"
-                onClick={addWinner}
-                className="w-full text-xs text-white/40"
-              >
-                <Plus className="w-3 h-3 mr-1" /> Add Place
-              </Button>
-            </div>
-            <Button
-              data-ocid="admin.winners.save_button"
-              onClick={saveWinners}
-              className="w-full font-heading font-bold uppercase"
-              style={{
-                background: "oklch(0.45 0.2 85)",
-                color: "oklch(0.95 0.05 85)",
-              }}
-            >
-              SAVE WINNERS
-            </Button>
-          </TabsContent>
-
-          {/* Announcements Tab */}
-          <TabsContent value="announce" className="p-4 space-y-4 mt-0">
-            <div
-              className="glass-card rounded-xl p-4 space-y-3"
-              style={{ border: "1px solid oklch(0.25 0.08 142 / 0.3)" }}
-            >
-              <Label className="text-xs text-white/50 uppercase tracking-widest block">
-                New Announcement
-              </Label>
-              <Input
-                data-ocid="admin.announce.input"
-                placeholder="Title"
-                value={annTitle}
-                onChange={(e) => setAnnTitle(e.target.value)}
-                className="bg-muted border-border"
-              />
-              <Textarea
-                data-ocid="admin.announce.textarea"
-                placeholder="Message..."
-                value={annMessage}
-                onChange={(e) => setAnnMessage(e.target.value)}
-                className="bg-muted border-border resize-none"
-                rows={3}
-              />
-              <Button
-                data-ocid="admin.announce.submit_button"
-                onClick={postAnnouncement}
-                className="w-full font-heading font-bold uppercase text-xs"
-                style={{
-                  background: "oklch(0.45 0.2 142)",
-                  color: "oklch(0.95 0.05 142)",
-                }}
-              >
-                POST ANNOUNCEMENT
-              </Button>
-            </div>
-
-            {/* Existing announcements */}
-            <div className="space-y-2">
-              {announcements.map((ann, i) => (
-                <div
-                  key={ann.id}
-                  className="flex items-start gap-2 glass-card rounded-lg px-3 py-2"
-                >
-                  <div className="flex-1">
-                    <p className="text-sm font-heading font-bold text-white/70">
-                      {ann.title}
-                    </p>
-                    <p className="text-xs text-white/40 mt-0.5">
-                      {ann.message.slice(0, 60)}
-                      {ann.message.length > 60 ? "..." : ""}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    data-ocid={`admin.announce.delete_button.${i + 1}`}
-                    onClick={() => onDeleteAnnouncement(ann.id)}
-                    className="text-white/20 hover:text-red-400 transition-colors mt-1"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
-              {announcements.length === 0 && (
-                <p className="text-xs text-center text-white/30 py-4">
-                  No announcements yet
-                </p>
-              )}
-            </div>
-          </TabsContent>
-
-          {/* Rules Tab */}
-          <TabsContent value="rules" className="p-4 space-y-4 mt-0">
-            <Label className="text-xs text-white/50 uppercase tracking-widest block">
-              Tournament Rules (one per line)
-            </Label>
-            <Textarea
-              data-ocid="admin.rules.textarea"
-              value={rulesText}
-              onChange={(e) => setRulesText(e.target.value)}
-              className="bg-muted border-border resize-none font-body text-sm"
-              rows={12}
-              placeholder="Enter each rule on a new line..."
-            />
-            <Button
-              data-ocid="admin.rules.save_button"
-              onClick={saveRules}
-              className="w-full font-heading font-bold uppercase"
-              style={{
-                background: "oklch(0.45 0.2 85)",
-                color: "oklch(0.95 0.05 85)",
-              }}
-            >
-              SAVE RULES
-            </Button>
-          </TabsContent>
-
-          {/* Leaderboard Tab */}
-          <TabsContent value="leaderboard" className="p-4 space-y-4 mt-0">
-            <div className="space-y-2">
-              {lbEntries.map((entry, i) => (
-                <div
-                  key={entry.id}
-                  className="glass-card rounded-xl p-3 space-y-2"
-                >
-                  <div className="flex items-center gap-2">
-                    <Input
-                      placeholder="Player name"
-                      value={entry.playerName}
-                      onChange={(e) =>
-                        setLbEntries((prev) =>
-                          prev.map((en, idx) =>
-                            idx === i
-                              ? { ...en, playerName: e.target.value }
-                              : en,
-                          ),
-                        )
-                      }
-                      className="flex-1 bg-muted border-border"
-                    />
-                    <button
-                      type="button"
-                      data-ocid={`admin.leaderboard.delete_button.${i + 1}`}
-                      onClick={() =>
-                        setLbEntries((prev) =>
-                          prev.filter((_, idx) => idx !== i),
-                        )
-                      }
-                      className="text-white/20 hover:text-red-400"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <Label className="text-xs text-white/30 block mb-1">
-                        Points
-                      </Label>
-                      <Input
-                        type="number"
-                        value={entry.points}
-                        onChange={(e) =>
-                          setLbEntries((prev) =>
-                            prev.map((en, idx) =>
-                              idx === i
-                                ? { ...en, points: Number(e.target.value) || 0 }
-                                : en,
-                            ),
-                          )
-                        }
-                        className="bg-muted border-border text-sm h-8"
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-xs text-white/30 block mb-1">
-                        Wins
-                      </Label>
-                      <Input
-                        type="number"
-                        value={entry.wins}
-                        onChange={(e) =>
-                          setLbEntries((prev) =>
-                            prev.map((en, idx) =>
-                              idx === i
-                                ? { ...en, wins: Number(e.target.value) || 0 }
-                                : en,
-                            ),
-                          )
-                        }
-                        className="bg-muted border-border text-sm h-8"
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-xs text-white/30 block mb-1">
-                        Losses
-                      </Label>
-                      <Input
-                        type="number"
-                        value={entry.losses}
-                        onChange={(e) =>
-                          setLbEntries((prev) =>
-                            prev.map((en, idx) =>
-                              idx === i
-                                ? {
-                                    ...en,
-                                    losses: Number(e.target.value) || 0,
-                                  }
-                                : en,
-                            ),
-                          )
-                        }
-                        className="bg-muted border-border text-sm h-8"
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
-              <Button
-                variant="ghost"
-                data-ocid="admin.leaderboard.button"
-                onClick={addLbEntry}
-                className="w-full text-xs text-white/40"
-              >
-                <Plus className="w-3 h-3 mr-1" /> Add Player
-              </Button>
-            </div>
-            <Button
-              data-ocid="admin.leaderboard.save_button"
-              onClick={saveLeaderboard}
-              className="w-full font-heading font-bold uppercase"
-              style={{
-                background: "oklch(0.45 0.2 85)",
-                color: "oklch(0.95 0.05 85)",
-              }}
-            >
-              SAVE LEADERBOARD
-            </Button>
-          </TabsContent>
-
-          {/* Match Results Tab */}
-          <TabsContent value="results" className="p-4 space-y-4 mt-0">
-            <div
-              className="glass-card rounded-xl p-4 space-y-3"
-              style={{ border: "1px solid oklch(0.25 0.05 220 / 0.3)" }}
-            >
-              <Label className="text-xs text-white/50 uppercase tracking-widest block">
-                Add Result
-              </Label>
-              <div className="grid grid-cols-2 gap-2">
-                <Input
-                  data-ocid="admin.results.input"
-                  placeholder="Player 1"
-                  value={mr_p1}
-                  onChange={(e) => setMrP1(e.target.value)}
-                  className="bg-muted border-border"
-                />
-                <Input
-                  placeholder="Player 2"
-                  value={mr_p2}
-                  onChange={(e) => setMrP2(e.target.value)}
-                  className="bg-muted border-border"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-xs text-white/30 block mb-1">
-                    Score 1
-                  </Label>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={mr_s1}
-                    onChange={(e) => setMrS1(e.target.value)}
-                    className="bg-muted border-border"
-                  />
-                </div>
-                <div>
-                  <Label className="text-xs text-white/30 block mb-1">
-                    Score 2
-                  </Label>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={mr_s2}
-                    onChange={(e) => setMrS2(e.target.value)}
-                    className="bg-muted border-border"
-                  />
-                </div>
-              </div>
-              <Button
-                data-ocid="admin.results.submit_button"
-                onClick={addMatchResult}
-                className="w-full font-heading font-bold uppercase text-xs"
-                style={{
-                  background: "oklch(0.45 0.2 85)",
-                  color: "oklch(0.95 0.05 85)",
-                }}
-              >
-                ADD RESULT
-              </Button>
-            </div>
-
-            {/* Existing results */}
-            <div className="space-y-2">
-              {matchResults.map((result, i) => (
-                <div
-                  key={result.id}
-                  className="flex items-center gap-2 glass-card rounded-lg px-3 py-2"
-                >
-                  <span className="flex-1 text-xs text-white/60">
-                    {result.player1} {result.score1}–{result.score2}{" "}
-                    {result.player2}
-                  </span>
-                  <button
-                    type="button"
-                    data-ocid={`admin.results.delete_button.${i + 1}`}
-                    onClick={() => onDeleteMatchResult(result.id)}
-                    className="text-white/20 hover:text-red-400 transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
-              {matchResults.length === 0 && (
-                <p className="text-xs text-center text-white/30 py-4">
-                  No results yet
-                </p>
-              )}
-            </div>
-          </TabsContent>
-
-          {/* Bracket Tab */}
-          <TabsContent value="bracket" className="p-4 space-y-4 mt-0">
-            <div className="space-y-3">
-              {bracketEntries.map((match, i) => (
-                <div
-                  key={match.id}
-                  className="glass-card rounded-xl p-3 space-y-2"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-white/40 uppercase tracking-widest">
-                      Round {match.round} · Match {match.position}
-                    </span>
-                    <button
-                      type="button"
-                      data-ocid={`admin.bracket.delete_button.${i + 1}`}
-                      onClick={() =>
-                        setBracketEntries((prev) =>
-                          prev.filter((_, idx) => idx !== i),
-                        )
-                      }
-                      className="text-white/20 hover:text-red-400"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <Label className="text-xs text-white/30 mb-1 block">
-                        Round
-                      </Label>
-                      <Input
-                        type="number"
-                        min="1"
-                        value={match.round}
-                        onChange={(e) =>
-                          setBracketEntries((prev) =>
-                            prev.map((m, idx) =>
-                              idx === i
-                                ? { ...m, round: Number(e.target.value) || 1 }
-                                : m,
-                            ),
-                          )
-                        }
-                        className="bg-muted border-border text-sm h-8"
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-xs text-white/30 mb-1 block">
-                        Position
-                      </Label>
-                      <Input
-                        type="number"
-                        min="1"
-                        value={match.position}
-                        onChange={(e) =>
-                          setBracketEntries((prev) =>
-                            prev.map((m, idx) =>
-                              idx === i
-                                ? {
-                                    ...m,
-                                    position: Number(e.target.value) || 1,
-                                  }
-                                : m,
-                            ),
-                          )
-                        }
-                        className="bg-muted border-border text-sm h-8"
-                      />
-                    </div>
-                  </div>
-                  <Input
-                    placeholder="Player 1"
-                    value={match.player1}
-                    onChange={(e) =>
-                      setBracketEntries((prev) =>
-                        prev.map((m, idx) =>
-                          idx === i ? { ...m, player1: e.target.value } : m,
-                        ),
-                      )
-                    }
-                    className="bg-muted border-border"
-                  />
-                  <Input
-                    placeholder="Player 2"
-                    value={match.player2}
-                    onChange={(e) =>
-                      setBracketEntries((prev) =>
-                        prev.map((m, idx) =>
-                          idx === i ? { ...m, player2: e.target.value } : m,
-                        ),
-                      )
-                    }
-                    className="bg-muted border-border"
-                  />
-                  <Input
-                    placeholder="Winner (leave blank if not played)"
-                    value={match.winner}
-                    onChange={(e) =>
-                      setBracketEntries((prev) =>
-                        prev.map((m, idx) =>
-                          idx === i ? { ...m, winner: e.target.value } : m,
-                        ),
-                      )
-                    }
-                    className="bg-muted border-border"
-                  />
-                </div>
-              ))}
-              <Button
-                variant="ghost"
-                data-ocid="admin.bracket.button"
-                onClick={addBracketMatch}
-                className="w-full text-xs text-white/40"
-              >
-                <Plus className="w-3 h-3 mr-1" /> Add Match
-              </Button>
-            </div>
-            <Button
-              data-ocid="admin.bracket.save_button"
-              onClick={saveBracket}
-              className="w-full font-heading font-bold uppercase"
-              style={{
-                background: "oklch(0.45 0.2 85)",
-                color: "oklch(0.95 0.05 85)",
-              }}
-            >
-              SAVE BRACKET
-            </Button>
-          </TabsContent>
-
-          {/* Themes Tab */}
-          <TabsContent value="themes" className="p-4 space-y-4 mt-0">
-            {(["home", "slots", "poll"] as const).map((section) => (
-              <div key={section}>
-                <Label className="text-xs text-white/50 uppercase tracking-widest mb-2 block">
-                  {section} Background
-                </Label>
-                <button
-                  type="button"
-                  className="glass-card rounded-xl p-3 flex items-center gap-3 cursor-pointer w-full text-left"
-                  onClick={() => fileInputRef.current[section]?.click()}
-                  onKeyDown={(e) =>
-                    e.key === "Enter" && fileInputRef.current[section]?.click()
-                  }
-                >
-                  <div
-                    className="w-12 h-12 rounded-lg overflow-hidden flex-shrink-0"
-                    style={{
-                      background: data.themes[section]
-                        ? `url(${data.themes[section]}) center/cover`
-                        : "oklch(0.15 0.03 220)",
-                    }}
-                  />
-                  <div className="flex-1">
-                    <p className="text-sm font-heading font-bold text-white/70">
-                      {data.themes[section] ? "Change Image" : "Upload Image"}
-                    </p>
-                    <p className="text-xs text-white/30 mt-0.5">
-                      Tap to select from gallery
-                    </p>
-                  </div>
-                  <Upload className="w-4 h-4 text-white/30" />
-                  <input
-                    data-ocid={`admin.themes.${section}.upload_button`}
-                    ref={(el) => {
-                      fileInputRef.current[section] = el;
-                    }}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleImageUpload(section, file);
-                    }}
-                  />
-                </button>
-              </div>
-            ))}
-          </TabsContent>
-        </div>
-      </Tabs>
-    </div>
-  );
-}
-
-// ─── Bottom Nav ────────────────────────────────────────────────────────────────
-function BottomNav({
-  activePage,
-  onNavigate,
-}: {
-  activePage: Page;
-  onNavigate: (page: Page) => void;
-}) {
-  const tabs: { id: Page | "exit"; label: string; icon: React.ReactNode }[] = [
-    { id: "slots", label: "Slots", icon: <Users className="w-5 h-5" /> },
-    { id: "poll", label: "Poll", icon: <BarChart3 className="w-5 h-5" /> },
-    {
-      id: "leaderboard",
-      label: "Rank",
-      icon: <Trophy className="w-5 h-5" />,
-    },
-    {
-      id: "results",
-      label: "Results",
-      icon: <Swords className="w-5 h-5" />,
-    },
-    {
-      id: "announcements",
-      label: "News",
-      icon: <MessageSquare className="w-5 h-5" />,
-    },
-    { id: "rules", label: "Rules", icon: <BookOpen className="w-5 h-5" /> },
-    {
-      id: "bracket",
-      label: "Bracket",
-      icon: <Swords className="w-5 h-5" />,
-    },
-    { id: "winner", label: "Winner", icon: <Shield className="w-5 h-5" /> },
-    { id: "exit", label: "Home", icon: <LogOut className="w-5 h-5" /> },
-  ];
-
-  return (
-    <nav
-      className="flex-shrink-0 safe-bottom"
-      style={{
-        background: "oklch(0.07 0.02 220 / 0.97)",
-        backdropFilter: "blur(20px)",
-        borderTop: "1px solid oklch(0.2 0.04 220 / 0.6)",
-      }}
-    >
-      <div className="flex overflow-x-auto scrollbar-hide">
-        {tabs.map((tab) => {
-          const isActive = activePage === tab.id;
-          const isExit = tab.id === "exit";
-          return (
-            <button
-              type="button"
-              key={tab.id}
-              data-ocid={`nav.${tab.id}.link`}
-              onClick={() => onNavigate(isExit ? "home" : (tab.id as Page))}
-              className={`flex-shrink-0 flex flex-col items-center justify-center py-3 px-3 gap-1 transition-all duration-200 min-w-[60px] ${
-                isActive && !isExit ? "tab-active" : ""
-              }`}
-              style={{
-                color:
-                  isActive && !isExit
-                    ? "oklch(0.7 0.25 142)"
-                    : isExit
-                      ? "oklch(0.55 0.12 20)"
-                      : "oklch(0.4 0.05 220)",
-              }}
-            >
-              {tab.icon}
-              <span className="text-xs font-heading font-semibold uppercase tracking-wider">
-                {tab.label}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </nav>
-  );
-}
-
-// ─── App Root ──────────────────────────────────────────────────────────────────
-export default function App() {
-  const [activePage, setActivePage] = useState<Page>("home");
-  const [showAdmin, setShowAdmin] = useState(false);
-
-  const {
-    data,
-    announcements,
-    rules,
-    leaderboard,
-    matchResults,
-    bracketMatches,
-    joinSlot,
-    voteOnPoll,
-    updateTournamentSettings,
-    updateSlot,
-    clearSlot,
-    updatePoll,
-    resetVotes,
-    updateWinners,
-    updateTheme,
-    addAnnouncement,
-    deleteAnnouncement,
-    updateRules,
-    updateLeaderboard,
-    addMatchResult,
-    deleteMatchResult,
-    updateBracket,
-    startTournament,
-    stopTournament,
-    tournamentStarted,
-  } = useTournament();
-
-  const isHome = activePage === "home";
-
-  const renderPage = () => {
-    switch (activePage) {
-      case "home":
-        return (
-          <HomePage
-            data={data}
-            tournamentStarted={tournamentStarted}
-            onJoin={() => setActivePage("slots")}
-            onAdmin={() => setShowAdmin(true)}
-          />
-        );
-      case "slots":
-        return <SlotsPage data={data} onJoinSlot={joinSlot} />;
-      case "poll":
-        return <PollPage data={data} onVote={voteOnPoll} />;
-      case "winner":
-        return <WinnerPage data={data} />;
-      case "announcements":
-        return <AnnouncementsPage announcements={announcements} />;
-      case "rules":
-        return <RulesPage rules={rules} />;
-      case "leaderboard":
-        return <LeaderboardPage leaderboard={leaderboard} />;
-      case "results":
-        return <MatchResultsPage matchResults={matchResults} />;
-      case "bracket":
-        return <BracketPage bracketMatches={bracketMatches} />;
-      default:
-        return null;
-    }
-  };
-
-  return (
-    <div className="h-full flex flex-col bg-background">
-      <Toaster
-        position="top-center"
-        toastOptions={{
-          style: {
-            background: "oklch(0.12 0.03 220)",
-            border: "1px solid oklch(0.25 0.05 220)",
-            color: "oklch(0.9 0.05 220)",
-          },
-        }}
-      />
-
-      {/* Main content area */}
-      <main className="flex-1 overflow-hidden flex flex-col">
-        {renderPage()}
-      </main>
-
-      {/* Bottom nav — only show when not on home */}
-      {!isHome && (
-        <BottomNav activePage={activePage} onNavigate={setActivePage} />
-      )}
-
-      {/* Admin panel overlay */}
-      {showAdmin && (
-        <AdminPanel
-          data={data}
-          announcements={announcements}
-          rules={rules}
-          leaderboard={leaderboard}
-          matchResults={matchResults}
-          bracketMatches={bracketMatches}
-          onClose={() => setShowAdmin(false)}
-          onUpdateSettings={updateTournamentSettings}
-          onUpdateSlot={updateSlot}
-          onClearSlot={clearSlot}
-          onUpdatePoll={updatePoll}
-          onResetVotes={resetVotes}
-          onUpdateWinners={updateWinners}
-          onUpdateTheme={updateTheme}
-          onAddAnnouncement={addAnnouncement}
-          onDeleteAnnouncement={deleteAnnouncement}
-          onUpdateRules={updateRules}
-          onUpdateLeaderboard={updateLeaderboard}
-          onAddMatchResult={addMatchResult}
-          onDeleteMatchResult={deleteMatchResult}
-          onUpdateBracket={updateBracket}
-          onStartTournament={startTournament}
-          onStopTournament={stopTournament}
-          tournamentStarted={tournamentStarted}
-        />
-      )}
 
       {/* Footer */}
-      <div
-        className={`text-center py-2 text-xs ${
-          isHome ? "absolute bottom-2 left-0 right-0 z-10" : ""
-        }`}
-        style={{ color: "oklch(0.3 0.03 220)" }}
-      >
-        © {new Date().getFullYear()} Built with ❤️ using{" "}
+      <footer className="px-4 py-4 text-center text-xs text-muted-foreground">
+        © {new Date().getFullYear()}. Built with love using{" "}
         <a
           href={`https://caffeine.ai?utm_source=caffeine-footer&utm_medium=referral&utm_content=${encodeURIComponent(window.location.hostname)}`}
+          className="text-neon hover:underline"
           target="_blank"
           rel="noopener noreferrer"
-          style={{ color: "oklch(0.45 0.1 220)" }}
         >
           caffeine.ai
         </a>
+      </footer>
+    </div>
+  );
+}
+
+// ─── Slots Page ───────────────────────────────────────────────────────────────
+function SlotsPage({
+  slots,
+  slotRequests,
+  themeSlots,
+  adminLoggedIn,
+  onSaveSlots,
+}: {
+  slots: Slot[];
+  slotRequests: SlotRequest[];
+  themeSlots: string;
+  adminLoggedIn: boolean;
+  onSaveSlots: (s: Slot[]) => void;
+}) {
+  const [joinName, setJoinName] = useState("");
+  const [joinWhatsApp, setJoinWhatsApp] = useState("");
+  const [joinSlot, setJoinSlot] = useState<number | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [submittedName, setSubmittedName] = useState("");
+
+  const emptySlots = slots.filter((s) => !s.player);
+  const filled = slots.filter((s) => s.player).length;
+
+  const handleSubmitRequest = async () => {
+    if (!joinName.trim() || joinSlot === null) return;
+    setSubmitting(true);
+    try {
+      await createActorWithConfig().then((a) =>
+        (a as any).submitSlotRequest(joinName.trim(), BigInt(joinSlot)),
+      );
+      setSubmittedName(joinName.trim());
+      setSubmitted(true);
+      setJoinName("");
+      setJoinWhatsApp("");
+      setJoinSlot(null);
+      toast.success("Request submitted! Waiting for admin approval.");
+    } catch {
+      toast.error("Failed to submit request");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAdminClearSlot = (id: number) => {
+    const updated = slots.map((s) => (s.id === id ? { ...s, player: "" } : s));
+    onSaveSlots(updated);
+  };
+
+  // Group requests for display
+  const pendingForPlayer = slotRequests.filter((r) => r.status === "pending");
+
+  return (
+    <div
+      className="min-h-full relative"
+      style={
+        themeSlots
+          ? {
+              backgroundImage: `url(${themeSlots})`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+            }
+          : {}
+      }
+    >
+      {themeSlots && (
+        <div
+          className="absolute inset-0 z-0 pointer-events-none"
+          style={{ background: "rgba(0,0,0,0.65)" }}
+        />
+      )}
+      <div className={themeSlots ? "relative z-10" : ""}>
+        <PageHeader
+          title="Player Slots"
+          subtitle={`${filled} / ${slots.length} registered`}
+          icon={Users}
+        />
+        <div className="px-4 pb-6 space-y-4">
+          {/* Contact */}
+          <div className="glass-card rounded-xl p-4 space-y-2">
+            <p className="text-xs text-muted-foreground font-bold uppercase tracking-wide">
+              Contact for Entry
+            </p>
+            <div className="flex flex-col gap-2">
+              <a
+                href="https://wa.me/917002352569"
+                target="_blank"
+                rel="noreferrer"
+                data-ocid="slots.primary_button"
+                className="flex items-center gap-2 text-green-400 hover:text-green-300"
+              >
+                <MessageCircle className="w-4 h-4" />
+                <span className="text-sm font-bold">WhatsApp: 7002352569</span>
+              </a>
+              <a
+                href="https://wa.me/917099127072"
+                target="_blank"
+                rel="noreferrer"
+                data-ocid="slots.secondary_button"
+                className="flex items-center gap-2 text-green-400 hover:text-green-300"
+              >
+                <MessageCircle className="w-4 h-4" />
+                <span className="text-sm font-bold">WhatsApp: 7099127072</span>
+              </a>
+            </div>
+          </div>
+
+          {/* Request a Slot */}
+          {!submitted ? (
+            <div className="glass-card rounded-xl p-4 space-y-3">
+              <p className="font-heading text-sm font-bold text-neon">
+                Request a Slot
+              </p>
+              <Input
+                data-ocid="slots.input"
+                placeholder="Your name"
+                value={joinName}
+                onChange={(e) => setJoinName(e.target.value)}
+              />
+              <Input
+                data-ocid="slots.whatsapp_input"
+                placeholder="WhatsApp number (optional)"
+                value={joinWhatsApp}
+                onChange={(e) => setJoinWhatsApp(e.target.value)}
+                type="tel"
+              />
+              <select
+                data-ocid="slots.select"
+                value={joinSlot ?? ""}
+                onChange={(e) => setJoinSlot(Number(e.target.value))}
+                className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm text-foreground"
+              >
+                <option value="">Choose a slot number</option>
+                {emptySlots.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    Slot #{s.id}
+                  </option>
+                ))}
+              </select>
+              <Button
+                data-ocid="slots.submit_button"
+                onClick={handleSubmitRequest}
+                disabled={submitting || !joinName.trim() || joinSlot === null}
+                className="w-full bg-primary text-primary-foreground"
+              >
+                {submitting ? (
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                ) : null}
+                Request Slot
+              </Button>
+            </div>
+          ) : (
+            <div
+              className="glass-card rounded-xl p-4 space-y-2 border border-amber-500/30"
+              data-ocid="slots.success_state"
+            >
+              <div className="flex items-center gap-2 text-amber-400">
+                <Clock className="w-4 h-4" />
+                <p className="font-heading text-sm font-bold">
+                  Request Pending
+                </p>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                <span className="text-neon font-bold">{submittedName}</span>,
+                your request is pending admin approval. Check back soon!
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSubmitted(false)}
+                className="text-xs"
+              >
+                Submit another request
+              </Button>
+            </div>
+          )}
+
+          {/* Pending requests (visible to all) */}
+          {pendingForPlayer.length > 0 && (
+            <div className="glass-card rounded-xl p-4 space-y-2">
+              <p className="font-heading text-xs font-bold text-amber-400 uppercase tracking-wide">
+                Pending Approvals ({pendingForPlayer.length})
+              </p>
+              {pendingForPlayer.map((req, i) => (
+                <div
+                  key={req.id}
+                  data-ocid={`slots.item.${i + 1}`}
+                  className="flex items-center justify-between text-sm py-1 border-b border-border/30 last:border-0"
+                >
+                  <span className="font-bold text-foreground">
+                    {req.playerName}
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    Slot #{req.slotNumber}
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className="text-amber-400 border-amber-500/30 text-xs"
+                  >
+                    Pending
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Slots grid */}
+          <div className="grid grid-cols-2 gap-2">
+            {slots.map((slot, i) => (
+              <div
+                key={slot.id}
+                data-ocid={`slots.item.${i + 1}`}
+                className={`relative rounded-xl p-3 min-h-[60px] flex items-center justify-between gap-2 ${
+                  slot.player ? "slot-filled" : "slot-empty"
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xs text-muted-foreground font-mono w-5 flex-shrink-0">
+                    #{slot.id}
+                  </span>
+                  {slot.player ? (
+                    <span className="text-sm font-bold text-neon truncate">
+                      {slot.player}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      data-ocid={`slots.edit_button.${i + 1}`}
+                      onClick={() => setJoinSlot(slot.id)}
+                      className="text-xs text-muted-foreground hover:text-neon transition-colors"
+                    >
+                      + Request
+                    </button>
+                  )}
+                </div>
+                {adminLoggedIn && slot.player && (
+                  <button
+                    type="button"
+                    data-ocid={`slots.delete_button.${i + 1}`}
+                    onClick={() => handleAdminClearSlot(slot.id)}
+                    className="flex-shrink-0 p-1 rounded hover:bg-destructive/20 text-destructive"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Polls Page ───────────────────────────────────────────────────────────────
+function PollsPage({
+  polls,
+  themePolls,
+  pollPrize,
+}: { polls: Poll[]; themePolls: string; pollPrize: string }) {
+  return (
+    <div
+      className="min-h-full"
+      style={
+        themePolls
+          ? {
+              backgroundImage: `url(${themePolls})`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+            }
+          : {}
+      }
+    >
+      <PageHeader
+        title="Match Fixtures"
+        subtitle="Current matchups"
+        icon={Swords}
+      />
+      <div className="px-4 pb-6">
+        {pollPrize && (
+          <div
+            data-ocid="polls.prize_section"
+            className="mb-4 flex items-center justify-center gap-2 rounded-xl px-4 py-3 border border-yellow-500/40 bg-yellow-500/10 text-yellow-300 font-bold text-base shadow-lg"
+          >
+            <span className="text-xl">🏆</span>
+            <span className="text-gold font-heading tracking-wide">
+              Prize: {pollPrize}
+            </span>
+          </div>
+        )}
+        {polls.length === 0 ? (
+          <EmptyState
+            data-ocid="polls.empty_state"
+            message="No matchups scheduled yet"
+          />
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            {polls.map((poll, i) => (
+              <div
+                key={poll.id}
+                data-ocid={`polls.item.${i + 1}`}
+                className="glass-card rounded-xl p-3 flex flex-col items-center gap-2 border-glow-green"
+              >
+                <span className="text-xs text-muted-foreground uppercase tracking-wide font-bold">
+                  Match {poll.id}
+                </span>
+                <div className="w-full text-center">
+                  {poll.matchup.includes(" vs ") ? (
+                    <>
+                      <p className="text-sm font-bold text-neon text-glow-green truncate">
+                        {poll.matchup.split(" vs ")[0]}
+                      </p>
+                      <p className="text-xs text-gold font-bold my-1">VS</p>
+                      <p className="text-sm font-bold text-neon text-glow-green truncate">
+                        {poll.matchup.split(" vs ")[1]}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-sm font-bold text-neon">
+                      {poll.matchup}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Leaderboard Page ─────────────────────────────────────────────────────────
+function LeaderboardPage({ leaderboard }: { leaderboard: LeaderboardRow[] }) {
+  const sorted = [...leaderboard].sort(
+    (a, b) => b.points - a.points || b.gf - b.ga - (a.gf - a.ga),
+  );
+  return (
+    <div className="min-h-full">
+      <PageHeader
+        title="Leaderboard"
+        subtitle="Season standings"
+        icon={BarChart2}
+      />
+      <div className="px-2 pb-6">
+        {sorted.length === 0 ? (
+          <EmptyState
+            data-ocid="leaderboard.empty_state"
+            message="No standings yet"
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs" data-ocid="leaderboard.table">
+              <thead>
+                <tr className="text-muted-foreground border-b border-border">
+                  <th className="py-2 px-2 text-left">#</th>
+                  <th className="py-2 px-2 text-left">Player</th>
+                  <th className="py-2 px-1 text-center">P</th>
+                  <th className="py-2 px-1 text-center">W</th>
+                  <th className="py-2 px-1 text-center">D</th>
+                  <th className="py-2 px-1 text-center">L</th>
+                  <th className="py-2 px-1 text-center">GF</th>
+                  <th className="py-2 px-1 text-center">GA</th>
+                  <th className="py-2 px-1 text-center">GD</th>
+                  <th className="py-2 px-1 text-center font-bold text-gold">
+                    Pts
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((row, i) => (
+                  <tr
+                    key={row.id}
+                    data-ocid={`leaderboard.item.${i + 1}`}
+                    className={`border-b border-border/50 ${
+                      i === 0
+                        ? "winner-gold"
+                        : i === 1
+                          ? "winner-silver"
+                          : i === 2
+                            ? "winner-bronze"
+                            : ""
+                    }`}
+                  >
+                    <td className="py-2 px-2 font-bold">{i + 1}</td>
+                    <td className="py-2 px-2 font-bold text-neon">
+                      {row.player}
+                    </td>
+                    <td className="py-2 px-1 text-center">{row.played}</td>
+                    <td className="py-2 px-1 text-center text-green-400">
+                      {row.w}
+                    </td>
+                    <td className="py-2 px-1 text-center">{row.d}</td>
+                    <td className="py-2 px-1 text-center text-destructive">
+                      {row.l}
+                    </td>
+                    <td className="py-2 px-1 text-center">{row.gf}</td>
+                    <td className="py-2 px-1 text-center">{row.ga}</td>
+                    <td className="py-2 px-1 text-center">{row.gf - row.ga}</td>
+                    <td className="py-2 px-1 text-center font-bold text-gold">
+                      {row.points}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Results Page ─────────────────────────────────────────────────────────────
+function ResultsPage({ results }: { results: MatchResult[] }) {
+  return (
+    <div className="min-h-full">
+      <PageHeader
+        title="Match Results"
+        subtitle="All completed matches"
+        icon={Trophy}
+      />
+      <div className="px-4 pb-6 space-y-3">
+        {results.length === 0 ? (
+          <EmptyState
+            data-ocid="results.empty_state"
+            message="No results yet"
+          />
+        ) : (
+          results.map((r, i) => (
+            <div
+              key={r.id}
+              data-ocid={`results.item.${i + 1}`}
+              className="glass-card rounded-xl p-4 flex items-center justify-between"
+            >
+              <span className="text-sm font-bold text-foreground flex-1 text-right">
+                {r.team1}
+              </span>
+              <div className="flex items-center gap-2 px-4">
+                <span className="font-heading text-xl font-bold text-neon text-glow-green">
+                  {r.score1}
+                </span>
+                <span className="text-muted-foreground">—</span>
+                <span className="font-heading text-xl font-bold text-neon text-glow-green">
+                  {r.score2}
+                </span>
+              </div>
+              <span className="text-sm font-bold text-foreground flex-1">
+                {r.team2}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Bracket Page ─────────────────────────────────────────────────────────────
+function BracketPage({ bracket }: { bracket: Bracket }) {
+  const renderMatch = (slot: BracketSlot, index: number, round: string) => (
+    <div
+      key={`${round}-${index}`}
+      className="glass-card rounded-xl p-3 border-glow-green"
+    >
+      <div className="text-xs text-muted-foreground mb-2 uppercase tracking-wide font-bold">
+        {round} {index + 1}
+      </div>
+      <div className="space-y-1">
+        <div
+          className={`text-sm font-bold px-2 py-1 rounded ${slot.team1 ? "text-neon" : "text-muted-foreground/50"}`}
+        >
+          {slot.team1 || "TBD"}
+        </div>
+        <div className="text-center text-xs text-gold font-bold">VS</div>
+        <div
+          className={`text-sm font-bold px-2 py-1 rounded ${slot.team2 ? "text-neon" : "text-muted-foreground/50"}`}
+        >
+          {slot.team2 || "TBD"}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-full">
+      <PageHeader
+        title="Knockout Bracket"
+        subtitle="Tournament bracket"
+        icon={GitBranch}
+      />
+      <div className="px-4 pb-6 space-y-6">
+        <div>
+          <h3 className="font-heading text-xs font-bold text-gold uppercase tracking-widest mb-3">
+            Quarter-Finals
+          </h3>
+          <div className="grid grid-cols-2 gap-3">
+            {bracket.qf.map((slot, i) => renderMatch(slot, i, "QF"))}
+          </div>
+        </div>
+        <div>
+          <h3 className="font-heading text-xs font-bold text-gold uppercase tracking-widest mb-3">
+            Semi-Finals
+          </h3>
+          <div className="grid grid-cols-2 gap-3">
+            {bracket.sf.map((slot, i) => renderMatch(slot, i, "SF"))}
+          </div>
+        </div>
+        <div>
+          <h3 className="font-heading text-xs font-bold text-gold uppercase tracking-widest mb-3">
+            Final
+          </h3>
+          <div className="max-w-xs">
+            {renderMatch(bracket.final, 0, "Final")}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Announcements Page ───────────────────────────────────────────────────────
+function AnnouncementsPage({
+  announcements,
+}: { announcements: Announcement[] }) {
+  return (
+    <div className="min-h-full">
+      <PageHeader
+        title="Announcements"
+        subtitle="Latest updates"
+        icon={Megaphone}
+      />
+      <div className="px-4 pb-6 space-y-3">
+        {announcements.length === 0 ? (
+          <EmptyState
+            data-ocid="announcements.empty_state"
+            message="No announcements"
+          />
+        ) : (
+          [...announcements].reverse().map((a, i) => (
+            <div
+              key={a.id}
+              data-ocid={`announcements.item.${i + 1}`}
+              className="glass-card rounded-xl p-4 border-l-2 border-neon animate-fade-slide-up"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="font-heading text-sm font-bold text-neon">
+                  {a.title}
+                </h3>
+                <span className="text-xs text-muted-foreground flex-shrink-0">
+                  {a.date}
+                </span>
+              </div>
+              <p className="text-sm text-foreground/80 mt-1 leading-relaxed">
+                {a.message}
+              </p>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Rules Page ───────────────────────────────────────────────────────────────
+function RulesPage({ rules }: { rules: string }) {
+  return (
+    <div className="min-h-full">
+      <PageHeader
+        title="Rules"
+        subtitle="Tournament regulations"
+        icon={BookOpen}
+      />
+      <div className="px-4 pb-6">
+        <div className="glass-card rounded-xl p-4">
+          {rules ? (
+            <pre className="text-sm text-foreground/90 whitespace-pre-wrap font-body leading-relaxed">
+              {rules}
+            </pre>
+          ) : (
+            <p className="text-muted-foreground text-sm">No rules set yet.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Admin Menu ───────────────────────────────────────────────────────────────
+function AdminMenu({
+  status,
+  onAdvance,
+  onSelectTab,
+  onLogout,
+}: {
+  status: TournamentStatus;
+  onAdvance: () => void;
+  onSelectTab: (tab: AdminTab) => void;
+  onLogout: () => void;
+}) {
+  const tabs: { id: AdminTab; label: string; icon: React.ElementType }[] = [
+    { id: "slots", label: "Slots", icon: Users },
+    { id: "polls", label: "Polls", icon: Swords },
+    { id: "leaderboard", label: "Leaderboard", icon: BarChart2 },
+    { id: "results", label: "Results", icon: Trophy },
+    { id: "bracket", label: "Bracket", icon: GitBranch },
+    { id: "announcements", label: "Announcements", icon: Megaphone },
+    { id: "rules", label: "Rules", icon: BookOpen },
+    { id: "themes", label: "Themes", icon: Upload },
+  ];
+
+  const nextLabel =
+    status === "UPCOMING"
+      ? "Start Tournament"
+      : status === "ONGOING"
+        ? "Complete Tournament"
+        : "Reset Tournament";
+  const btnClass =
+    status === "UPCOMING"
+      ? "bg-green-600 hover:bg-green-500"
+      : status === "ONGOING"
+        ? "bg-amber-600 hover:bg-amber-500"
+        : "bg-blue-600 hover:bg-blue-500";
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle className="font-heading text-neon text-glow-green">
+          Admin Panel
+        </DialogTitle>
+      </DialogHeader>
+      <div className="space-y-4 py-2">
+        <Button
+          data-ocid="admin.primary_button"
+          onClick={onAdvance}
+          className={`w-full text-white font-bold flex items-center gap-2 ${btnClass}`}
+        >
+          <Play className="w-4 h-4" />
+          {nextLabel}
+        </Button>
+        <div className="grid grid-cols-2 gap-2">
+          {tabs.map(({ id, label, icon: Icon }) => (
+            <button
+              type="button"
+              key={id}
+              data-ocid={`admin.${id}.button`}
+              onClick={() => onSelectTab(id)}
+              className="glass-card rounded-xl p-3 flex flex-col items-center gap-2 hover:border-neon/50 transition-all text-center"
+            >
+              <Icon className="w-5 h-5 text-neon" />
+              <span className="text-xs font-bold">{label}</span>
+            </button>
+          ))}
+        </div>
+        <Button
+          data-ocid="admin.secondary_button"
+          variant="outline"
+          onClick={onLogout}
+          className="w-full"
+        >
+          Logout
+        </Button>
+      </div>
+    </>
+  );
+}
+
+// ─── Admin Tab Panel ──────────────────────────────────────────────────────────
+function AdminTabPanel(props: {
+  tab: AdminTab;
+  onBack: () => void;
+  slots: Slot[];
+  saveSlots: (s: Slot[]) => void;
+  slotRequests: SlotRequest[];
+  approveRequest: (id: number) => void;
+  rejectRequest: (id: number) => void;
+  polls: Poll[];
+  savePolls: (p: Poll[]) => void;
+  leaderboard: LeaderboardRow[];
+  saveLeaderboard: (l: LeaderboardRow[]) => void;
+  results: MatchResult[];
+  saveResults: (r: MatchResult[]) => void;
+  bracket: Bracket;
+  saveBracket: (b: Bracket) => void;
+  announcements: Announcement[];
+  saveAnnouncements: (a: Announcement[]) => void;
+  rules: string;
+  saveRules: (r: string) => void;
+  entryFee: string;
+  tournDate: string;
+  status: TournamentStatus;
+  saveSettings: (
+    fee: string,
+    date: string,
+    status: TournamentStatus,
+    newMaxSlots?: number,
+  ) => void;
+  maxSlots?: number;
+  setMaxSlots?: (v: number) => void;
+  themeHome: string;
+  setThemeHome: (v: string) => void;
+  themeSlots: string;
+  setThemeSlots: (v: string) => void;
+  themePolls: string;
+  setThemePolls: (v: string) => void;
+  themeLeaderboard?: string;
+  setThemeLeaderboard?: (v: string) => void;
+  themeResults?: string;
+  setThemeResults?: (v: string) => void;
+  pollPrize: string;
+  setPollPrize: (v: string) => void;
+  quarterFinalPlayers?: number;
+  setQuarterFinalPlayers?: (v: number) => void;
+  semiFinalPlayers?: number;
+  setSemiFinalPlayers?: (v: number) => void;
+}) {
+  const { tab, onBack } = props;
+
+  const BackBtn = () => (
+    <button
+      type="button"
+      data-ocid="admin.cancel_button"
+      onClick={onBack}
+      className="flex items-center gap-1 text-sm text-muted-foreground hover:text-neon mb-3"
+    >
+      <ChevronLeft className="w-4 h-4" /> Back
+    </button>
+  );
+
+  if (tab === "slots")
+    return (
+      <AdminSlots
+        {...props}
+        maxSlots={props.maxSlots ?? 16}
+        setMaxSlots={props.setMaxSlots ?? (() => {})}
+        BackBtn={BackBtn}
+      />
+    );
+  if (tab === "polls")
+    return (
+      <AdminPolls
+        {...props}
+        quarterFinalPlayers={props.quarterFinalPlayers ?? 8}
+        setQuarterFinalPlayers={props.setQuarterFinalPlayers ?? (() => {})}
+        semiFinalPlayers={props.semiFinalPlayers ?? 4}
+        setSemiFinalPlayers={props.setSemiFinalPlayers ?? (() => {})}
+        BackBtn={BackBtn}
+      />
+    );
+  if (tab === "leaderboard")
+    return <AdminLeaderboard {...props} BackBtn={BackBtn} />;
+  if (tab === "results") return <AdminResults {...props} BackBtn={BackBtn} />;
+  if (tab === "bracket") return <AdminBracket {...props} BackBtn={BackBtn} />;
+  if (tab === "announcements")
+    return <AdminAnnouncements {...props} BackBtn={BackBtn} />;
+  if (tab === "rules") return <AdminRules {...props} BackBtn={BackBtn} />;
+  if (tab === "themes") return <AdminThemes {...props} BackBtn={BackBtn} />;
+  return null;
+}
+
+// ─── Admin Slots ──────────────────────────────────────────────────────────────
+function AdminSlots({
+  slots,
+  saveSlots,
+  slotRequests,
+  approveRequest,
+  rejectRequest,
+  entryFee,
+  tournDate,
+  status,
+  saveSettings,
+  maxSlots,
+  BackBtn,
+}: any) {
+  const [editingSlot, setEditingSlot] = useState<number | null>(null);
+  const [editVal, setEditVal] = useState("");
+  const [fee, setFee] = useState(entryFee);
+  const [date, setDate] = useState(tournDate);
+  const [slotCount, setSlotCount] = useState(String(maxSlots ?? 16));
+  useEffect(() => {
+    setFee(entryFee);
+  }, [entryFee]);
+  useEffect(() => {
+    setDate(tournDate);
+  }, [tournDate]);
+  useEffect(() => {
+    setSlotCount(String(maxSlots ?? 16));
+  }, [maxSlots]);
+
+  const pendingRequests = slotRequests.filter(
+    (r: SlotRequest) => r.status === "pending",
+  );
+
+  return (
+    <div className="space-y-4">
+      <BackBtn />
+      <h3 className="font-heading font-bold text-gold">Manage Slots & Info</h3>
+
+      {/* Settings */}
+      <div className="space-y-2">
+        <Label className="text-xs">Entry Fee</Label>
+        <div className="flex gap-2">
+          <Input
+            value={fee}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setFee(e.target.value)
+            }
+            className="flex-1"
+          />
+          <Button size="sm" onClick={() => saveSettings(fee, date, status)}>
+            Save
+          </Button>
+        </div>
+        <Label className="text-xs">Tournament Date/Time</Label>
+        <div className="flex gap-2">
+          <Input
+            value={date}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setDate(e.target.value)
+            }
+            className="flex-1"
+            placeholder="e.g. 2026-04-01 18:00"
+          />
+          <Button size="sm" onClick={() => saveSettings(fee, date, status)}>
+            Save
+          </Button>
+        </div>
+        <Label className="text-xs">Total No. of Slots</Label>
+        <div className="flex gap-2">
+          <Input
+            data-ocid="admin.slots.count_input"
+            type="number"
+            min={2}
+            max={64}
+            value={slotCount}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setSlotCount(e.target.value)
+            }
+            className="flex-1"
+            placeholder="e.g. 16"
+          />
+          <Button
+            size="sm"
+            data-ocid="admin.slots.count_save_button"
+            onClick={() => {
+              const n = Math.max(
+                2,
+                Math.min(64, Number.parseInt(slotCount) || 16),
+              );
+              setSlotCount(String(n));
+              saveSettings(fee, date, status, n);
+            }}
+          >
+            Save
+          </Button>
+        </div>
+      </div>
+
+      {/* Pending Requests */}
+      {pendingRequests.length > 0 && (
+        <div className="space-y-2">
+          <p className="font-heading text-xs font-bold text-amber-400 uppercase tracking-wide">
+            Pending Requests ({pendingRequests.length})
+          </p>
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {pendingRequests.map((req: SlotRequest, i: number) => (
+              <div
+                key={req.id}
+                data-ocid={`admin.slots.item.${i + 1}`}
+                className="glass-card rounded-lg p-3 flex items-center justify-between gap-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-neon truncate">
+                    {req.playerName}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Slot #{req.slotNumber}
+                  </p>
+                  {req.whatsappNo && (
+                    <a
+                      href={`https://wa.me/${req.whatsappNo.replace(/[^0-9]/g, "")}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-green-400 hover:text-green-300 flex items-center gap-1"
+                    >
+                      <span>📱 {req.whatsappNo}</span>
+                    </a>
+                  )}
+                </div>
+                <div className="flex gap-1">
+                  <Button
+                    size="sm"
+                    data-ocid={`admin.slots.edit_button.${i + 1}`}
+                    onClick={() => approveRequest(req.id)}
+                    className="bg-green-600 hover:bg-green-500 text-white h-7 px-2 text-xs"
+                  >
+                    <Check className="w-3 h-3 mr-1" /> Approve
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    data-ocid={`admin.slots.delete_button.${i + 1}`}
+                    onClick={() => rejectRequest(req.id)}
+                    className="h-7 px-2 text-xs"
+                  >
+                    <X className="w-3 h-3 mr-1" /> Reject
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Approved Slots */}
+      <div className="space-y-2">
+        <p className="font-heading text-xs font-bold text-gold uppercase tracking-wide">
+          Approved Slots
+        </p>
+        <div className="space-y-2 max-h-60 overflow-y-auto">
+          {slots.map((slot: Slot, i: number) => (
+            <div key={slot.id} className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground w-6">
+                #{slot.id}
+              </span>
+              {editingSlot === slot.id ? (
+                <>
+                  <Input
+                    value={editVal}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setEditVal(e.target.value)
+                    }
+                    className="flex-1 h-8 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const updated = slots.map((s: Slot) =>
+                        s.id === slot.id ? { ...s, player: editVal } : s,
+                      );
+                      saveSlots(updated);
+                      setEditingSlot(null);
+                    }}
+                  >
+                    <Check className="w-4 h-4 text-neon" />
+                  </button>
+                  <button type="button" onClick={() => setEditingSlot(null)}>
+                    <X className="w-4 h-4 text-destructive" />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span
+                    className={`flex-1 text-sm ${slot.player ? "text-neon" : "text-muted-foreground/50"}`}
+                  >
+                    {slot.player || "Empty"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingSlot(slot.id);
+                      setEditVal(slot.player);
+                    }}
+                  >
+                    <Edit2 className="w-3.5 h-3.5 text-muted-foreground hover:text-neon" />
+                  </button>
+                  {slot.player && (
+                    <button
+                      type="button"
+                      data-ocid={`admin.slots.delete_button.${i + 1}`}
+                      onClick={() => {
+                        const updated = slots.map((s: Slot) =>
+                          s.id === slot.id ? { ...s, player: "" } : s,
+                        );
+                        saveSlots(updated);
+                        toast("Slot cleared");
+                      }}
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-destructive/70 hover:text-destructive" />
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Admin Polls ──────────────────────────────────────────────────────────────
+function AdminPolls({
+  polls,
+  savePolls,
+  pollPrize,
+  setPollPrize,
+  quarterFinalPlayers,
+  setQuarterFinalPlayers,
+  semiFinalPlayers,
+  setSemiFinalPlayers,
+  BackBtn,
+}: any) {
+  const [localPolls, setLocalPolls] = useState<Poll[]>(polls);
+  const [count, setCount] = useState(String(polls.length || 4));
+
+  const applyCount = () => {
+    const n = Math.max(1, Math.min(12, Number.parseInt(count) || 1));
+    const next: Poll[] = Array.from({ length: n }, (_, i) => ({
+      id: i + 1,
+      matchup:
+        localPolls[i]?.matchup ?? `Player ${i * 2 + 1} vs Player ${i * 2 + 2}`,
+    }));
+    setLocalPolls(next);
+  };
+
+  const updateMatchup = (id: number, val: string) => {
+    setLocalPolls(
+      localPolls.map((p: Poll) => (p.id === id ? { ...p, matchup: val } : p)),
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      <BackBtn />
+      <h3 className="font-heading font-bold text-gold">
+        Manage Polls / Fixtures
+      </h3>
+      <div className="space-y-1">
+        <Label className="text-xs text-muted-foreground">
+          Poll Prize / Reward
+        </Label>
+        <Input
+          data-ocid="admin.polls.prize_input"
+          value={pollPrize ?? ""}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            setPollPrize(e.target.value)
+          }
+          placeholder="e.g. ₹500 Cash Prize"
+          className="h-8 text-sm"
+        />
+      </div>
+      <div className="flex gap-2 items-center">
+        <Label className="text-xs whitespace-nowrap">No. of Polls</Label>
+        <Input
+          value={count}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            setCount(e.target.value)
+          }
+          className="w-20 h-8"
+        />
+        <Button size="sm" onClick={applyCount}>
+          Apply
+        </Button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <Label className="text-xs text-muted-foreground">
+            Quarter Final Players
+          </Label>
+          <Input
+            data-ocid="admin.polls.qf_players_input"
+            type="number"
+            min={2}
+            max={32}
+            value={quarterFinalPlayers}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setQuarterFinalPlayers(
+                Math.max(2, Math.min(32, Number(e.target.value) || 2)),
+              )
+            }
+            className="h-8 text-sm"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs text-muted-foreground">
+            Semi Final Players
+          </Label>
+          <Input
+            data-ocid="admin.polls.sf_players_input"
+            type="number"
+            min={2}
+            max={32}
+            value={semiFinalPlayers}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setSemiFinalPlayers(
+                Math.max(2, Math.min(32, Number(e.target.value) || 2)),
+              )
+            }
+            className="h-8 text-sm"
+          />
+        </div>
+      </div>
+      <div className="space-y-2 max-h-64 overflow-y-auto">
+        {localPolls.map((poll: Poll, i: number) => (
+          <div
+            key={poll.id}
+            data-ocid={`admin.polls.item.${i + 1}`}
+            className="space-y-1"
+          >
+            <Label className="text-xs text-muted-foreground">
+              Match {poll.id}
+            </Label>
+            <Input
+              data-ocid={`admin.polls.input.${i + 1}`}
+              value={poll.matchup}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                updateMatchup(poll.id, e.target.value)
+              }
+              placeholder="Player A vs Player B"
+              className="h-8 text-sm"
+            />
+          </div>
+        ))}
+      </div>
+      <Button
+        data-ocid="admin.polls.save_button"
+        onClick={() => savePolls(localPolls)}
+        className="w-full bg-primary text-primary-foreground"
+      >
+        Save All
+      </Button>
+    </div>
+  );
+}
+
+// ─── Admin Leaderboard ────────────────────────────────────────────────────────
+function AdminLeaderboard({ leaderboard, saveLeaderboard, BackBtn }: any) {
+  const [form, setForm] = useState({
+    player: "",
+    played: "0",
+    w: "0",
+    d: "0",
+    l: "0",
+    gf: "0",
+    ga: "0",
+    points: "0",
+  });
+
+  const addRow = () => {
+    if (!form.player.trim()) return;
+    const row: LeaderboardRow = {
+      id: Date.now(),
+      player: form.player.trim(),
+      played: Number.parseInt(form.played) || 0,
+      w: Number.parseInt(form.w) || 0,
+      d: Number.parseInt(form.d) || 0,
+      l: Number.parseInt(form.l) || 0,
+      gf: Number.parseInt(form.gf) || 0,
+      ga: Number.parseInt(form.ga) || 0,
+      points: Number.parseInt(form.points) || 0,
+    };
+    const next = [...leaderboard, row];
+    saveLeaderboard(next);
+    toast.success("Player added");
+    setForm({
+      player: "",
+      played: "0",
+      w: "0",
+      d: "0",
+      l: "0",
+      gf: "0",
+      ga: "0",
+      points: "0",
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <BackBtn />
+      <h3 className="font-heading font-bold text-gold">Leaderboard</h3>
+      <div className="space-y-2">
+        <Input
+          data-ocid="admin.leaderboard.input"
+          placeholder="Player name"
+          value={form.player}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            setForm({ ...form, player: e.target.value })
+          }
+        />
+        <div className="grid grid-cols-4 gap-1">
+          {(["played", "w", "d", "l"] as const).map((k) => (
+            <div key={k}>
+              <Label className="text-[10px] text-muted-foreground uppercase">
+                {k}
+              </Label>
+              <Input
+                value={form[k]}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setForm({ ...form, [k]: e.target.value })
+                }
+                className="h-8 text-sm"
+              />
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-4 gap-1">
+          {(["gf", "ga", "points"] as const).map((k) => (
+            <div key={k}>
+              <Label className="text-[10px] text-muted-foreground uppercase">
+                {k}
+              </Label>
+              <Input
+                value={form[k]}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setForm({ ...form, [k]: e.target.value })
+                }
+                className="h-8 text-sm"
+              />
+            </div>
+          ))}
+          <Button
+            data-ocid="admin.leaderboard.submit_button"
+            size="sm"
+            onClick={addRow}
+            className="self-end bg-primary text-primary-foreground"
+          >
+            <Plus className="w-4 h-4" />
+          </Button>
+        </div>
+      </div>
+      <div className="space-y-2 max-h-48 overflow-y-auto">
+        {leaderboard.map((row: LeaderboardRow, i: number) => (
+          <div
+            key={row.id}
+            data-ocid={`admin.leaderboard.item.${i + 1}`}
+            className="flex items-center justify-between glass-card rounded-lg p-2 text-sm"
+          >
+            <span className="text-neon font-bold">{row.player}</span>
+            <span className="text-muted-foreground text-xs">
+              {row.points} pts
+            </span>
+            <button
+              type="button"
+              data-ocid={`admin.leaderboard.delete_button.${i + 1}`}
+              onClick={() =>
+                saveLeaderboard(
+                  leaderboard.filter((r: LeaderboardRow) => r.id !== row.id),
+                )
+              }
+            >
+              <Trash2 className="w-4 h-4 text-destructive/70 hover:text-destructive" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Admin Results ────────────────────────────────────────────────────────────
+function AdminResults({ results, saveResults, BackBtn }: any) {
+  const [form, setForm] = useState({
+    team1: "",
+    score1: "0",
+    score2: "0",
+    team2: "",
+  });
+
+  const addResult = () => {
+    if (!form.team1.trim() || !form.team2.trim()) return;
+    const next = [
+      ...results,
+      {
+        id: Date.now(),
+        team1: form.team1,
+        score1: Number.parseInt(form.score1) || 0,
+        score2: Number.parseInt(form.score2) || 0,
+        team2: form.team2,
+      },
+    ];
+    saveResults(next);
+    toast.success("Result added");
+    setForm({ team1: "", score1: "0", score2: "0", team2: "" });
+  };
+
+  return (
+    <div className="space-y-4">
+      <BackBtn />
+      <h3 className="font-heading font-bold text-gold">Match Results</h3>
+      <div className="space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          <Input
+            data-ocid="admin.results.input"
+            placeholder="Team 1"
+            value={form.team1}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setForm({ ...form, team1: e.target.value })
+            }
+          />
+          <Input
+            placeholder="Team 2"
+            value={form.team2}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setForm({ ...form, team2: e.target.value })
+            }
+          />
+        </div>
+        <div className="flex gap-2 items-center">
+          <Input
+            placeholder="0"
+            value={form.score1}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setForm({ ...form, score1: e.target.value })
+            }
+            className="w-16 text-center"
+          />
+          <span className="text-muted-foreground">—</span>
+          <Input
+            placeholder="0"
+            value={form.score2}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setForm({ ...form, score2: e.target.value })
+            }
+            className="w-16 text-center"
+          />
+          <Button
+            data-ocid="admin.results.submit_button"
+            onClick={addResult}
+            className="flex-1 bg-primary text-primary-foreground"
+          >
+            <Plus className="w-4 h-4" />
+          </Button>
+        </div>
+      </div>
+      <div className="space-y-2 max-h-48 overflow-y-auto">
+        {results.map((r: MatchResult, i: number) => (
+          <div
+            key={r.id}
+            data-ocid={`admin.results.item.${i + 1}`}
+            className="flex items-center justify-between glass-card rounded-lg p-2 text-sm"
+          >
+            <span className="truncate flex-1 text-right">{r.team1}</span>
+            <span className="text-neon font-bold mx-2">
+              {r.score1}–{r.score2}
+            </span>
+            <span className="truncate flex-1">{r.team2}</span>
+            <button
+              type="button"
+              data-ocid={`admin.results.delete_button.${i + 1}`}
+              onClick={() =>
+                saveResults(results.filter((x: MatchResult) => x.id !== r.id))
+              }
+            >
+              <Trash2 className="w-4 h-4 text-destructive/70 hover:text-destructive ml-2" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Admin Bracket ────────────────────────────────────────────────────────────
+function AdminBracket({ bracket, saveBracket, BackBtn }: any) {
+  const [local, setLocal] = useState<Bracket>(bracket);
+
+  const update = (
+    round: "qf" | "sf",
+    idx: number,
+    field: "team1" | "team2",
+    val: string,
+  ) => {
+    if (round === "qf") {
+      setLocal({
+        ...local,
+        qf: local.qf.map((s: BracketSlot, i: number) =>
+          i === idx ? { ...s, [field]: val } : s,
+        ),
+      });
+    } else {
+      setLocal({
+        ...local,
+        sf: local.sf.map((s: BracketSlot, i: number) =>
+          i === idx ? { ...s, [field]: val } : s,
+        ),
+      });
+    }
+  };
+  const updateFinal = (field: "team1" | "team2", val: string) => {
+    setLocal({ ...local, final: { ...local.final, [field]: val } });
+  };
+
+  return (
+    <div className="space-y-4">
+      <BackBtn />
+      <h3 className="font-heading font-bold text-gold">Bracket Editor</h3>
+      <div className="max-h-72 overflow-y-auto space-y-4">
+        <div>
+          <p className="text-xs font-bold text-muted-foreground uppercase mb-2">
+            Quarter-Finals
+          </p>
+          {local.qf.map((slot: BracketSlot, i: number) => (
+            <div key={slot.id} className="grid grid-cols-2 gap-1 mb-2">
+              <Input
+                placeholder={`QF${i + 1} Team 1`}
+                value={slot.team1}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  update("qf", i, "team1", e.target.value)
+                }
+                className="h-8 text-sm"
+              />
+              <Input
+                placeholder={`QF${i + 1} Team 2`}
+                value={slot.team2}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  update("qf", i, "team2", e.target.value)
+                }
+                className="h-8 text-sm"
+              />
+            </div>
+          ))}
+        </div>
+        <div>
+          <p className="text-xs font-bold text-muted-foreground uppercase mb-2">
+            Semi-Finals
+          </p>
+          {local.sf.map((slot: BracketSlot, i: number) => (
+            <div key={slot.id} className="grid grid-cols-2 gap-1 mb-2">
+              <Input
+                placeholder={`SF${i + 1} Team 1`}
+                value={slot.team1}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  update("sf", i, "team1", e.target.value)
+                }
+                className="h-8 text-sm"
+              />
+              <Input
+                placeholder={`SF${i + 1} Team 2`}
+                value={slot.team2}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  update("sf", i, "team2", e.target.value)
+                }
+                className="h-8 text-sm"
+              />
+            </div>
+          ))}
+        </div>
+        <div>
+          <p className="text-xs font-bold text-muted-foreground uppercase mb-2">
+            Final
+          </p>
+          <div className="grid grid-cols-2 gap-1">
+            <Input
+              placeholder="Final Team 1"
+              value={local.final.team1}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                updateFinal("team1", e.target.value)
+              }
+              className="h-8 text-sm"
+            />
+            <Input
+              placeholder="Final Team 2"
+              value={local.final.team2}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                updateFinal("team2", e.target.value)
+              }
+              className="h-8 text-sm"
+            />
+          </div>
+        </div>
+      </div>
+      <Button
+        data-ocid="admin.bracket.save_button"
+        onClick={() => saveBracket(local)}
+        className="w-full bg-primary text-primary-foreground"
+      >
+        Save Bracket
+      </Button>
+    </div>
+  );
+}
+
+// ─── Admin Announcements ──────────────────────────────────────────────────────
+function AdminAnnouncements({
+  announcements,
+  saveAnnouncements,
+  BackBtn,
+}: any) {
+  const [title, setTitle] = useState("");
+  const [message, setMessage] = useState("");
+
+  const add = () => {
+    if (!title.trim() || !message.trim()) return;
+    const next = [
+      ...announcements,
+      {
+        id: Date.now(),
+        title: title.trim(),
+        message: message.trim(),
+        date: new Date().toISOString().slice(0, 10),
+      },
+    ];
+    saveAnnouncements(next);
+    toast.success("Announcement posted");
+    setTitle("");
+    setMessage("");
+  };
+
+  return (
+    <div className="space-y-4">
+      <BackBtn />
+      <h3 className="font-heading font-bold text-gold">Announcements</h3>
+      <Input
+        data-ocid="admin.announcements.input"
+        placeholder="Title"
+        value={title}
+        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+          setTitle(e.target.value)
+        }
+      />
+      <Textarea
+        data-ocid="admin.announcements.textarea"
+        placeholder="Message"
+        value={message}
+        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+          setMessage(e.target.value)
+        }
+        rows={3}
+      />
+      <Button
+        data-ocid="admin.announcements.submit_button"
+        onClick={add}
+        className="w-full bg-primary text-primary-foreground"
+      >
+        <Plus className="w-4 h-4 mr-1" /> Post
+      </Button>
+      <div className="space-y-2 max-h-48 overflow-y-auto">
+        {announcements.map((a: Announcement, i: number) => (
+          <div
+            key={a.id}
+            data-ocid={`admin.announcements.item.${i + 1}`}
+            className="flex items-start justify-between glass-card rounded-lg p-2"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-bold text-neon truncate">{a.title}</p>
+              <p className="text-xs text-muted-foreground truncate">
+                {a.message}
+              </p>
+            </div>
+            <button
+              type="button"
+              data-ocid={`admin.announcements.delete_button.${i + 1}`}
+              onClick={() =>
+                saveAnnouncements(
+                  announcements.filter((x: Announcement) => x.id !== a.id),
+                )
+              }
+              className="ml-2 flex-shrink-0"
+            >
+              <Trash2 className="w-4 h-4 text-destructive/70 hover:text-destructive" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Admin Rules ──────────────────────────────────────────────────────────────
+function AdminRules({ rules, saveRules, BackBtn }: any) {
+  const [val, setVal] = useState(rules);
+  return (
+    <div className="space-y-4">
+      <BackBtn />
+      <h3 className="font-heading font-bold text-gold">Edit Rules</h3>
+      <Textarea
+        data-ocid="admin.rules.textarea"
+        value={val}
+        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+          setVal(e.target.value)
+        }
+        rows={10}
+        className="text-sm"
+      />
+      <Button
+        data-ocid="admin.rules.save_button"
+        onClick={() => saveRules(val)}
+        className="w-full bg-primary text-primary-foreground"
+      >
+        Save Rules
+      </Button>
+    </div>
+  );
+}
+
+// ─── Admin Themes ─────────────────────────────────────────────────────────────
+function AdminThemes({
+  themeHome,
+  setThemeHome,
+  themeSlots,
+  setThemeSlots,
+  themePolls,
+  setThemePolls,
+  themeLeaderboard,
+  setThemeLeaderboard,
+  themeResults,
+  setThemeResults,
+  BackBtn,
+}: any) {
+  const homeRef = useRef<HTMLInputElement>(null);
+  const slotsRef = useRef<HTMLInputElement>(null);
+  const pollsRef = useRef<HTMLInputElement>(null);
+  const lbRef = useRef<HTMLInputElement>(null);
+  const resultsRef = useRef<HTMLInputElement>(null);
+
+  const handleUpload =
+    (setter: (v: string) => void) =>
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        setter(ev.target?.result as string);
+        toast.success("Theme uploaded!");
+      };
+      reader.readAsDataURL(file);
+    };
+
+  const ThemeSection = ({
+    label,
+    value,
+    setter,
+    inputRef,
+    badge,
+  }: {
+    label: string;
+    value: string;
+    setter: (v: string) => void;
+    inputRef: React.RefObject<HTMLInputElement | null>;
+    badge?: string;
+  }) => (
+    <div
+      className={`relative rounded-2xl overflow-hidden border ${value ? "border-primary/60" : "border-border/40"} shadow-lg`}
+    >
+      {/* Preview background */}
+      {value ? (
+        <div
+          className="absolute inset-0 bg-cover bg-center opacity-30"
+          style={{ backgroundImage: `url(${value})` }}
+        />
+      ) : null}
+      <div className="relative z-10 p-4 space-y-3 bg-gradient-to-br from-black/60 to-black/30">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-bold text-gold">{label}</p>
+            {badge && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/30 text-primary border border-primary/40 font-bold uppercase tracking-wider">
+                {badge}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {value && (
+              <button
+                type="button"
+                onClick={() => setter("")}
+                className="text-xs text-destructive/80 hover:text-destructive px-2 py-0.5 rounded border border-destructive/30 hover:border-destructive/60 transition-colors"
+              >
+                Remove
+              </button>
+            )}
+            <div
+              className={`w-2 h-2 rounded-full ${value ? "bg-green-400" : "bg-muted-foreground/40"}`}
+            />
+          </div>
+        </div>
+        {!value && (
+          <div className="w-full h-14 rounded-xl border border-dashed border-border/50 flex items-center justify-center">
+            <span className="text-xs text-muted-foreground">No image set</span>
+          </div>
+        )}
+        {value && (
+          <div
+            className="w-full h-14 rounded-xl bg-cover bg-center border border-primary/20"
+            style={{ backgroundImage: `url(${value})` }}
+          />
+        )}
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={handleUpload(setter)}
+        />
+        <Button
+          size="sm"
+          data-ocid="admin.themes.upload_button"
+          onClick={() => inputRef.current?.click()}
+          className="w-full bg-primary/80 hover:bg-primary text-white font-bold text-xs shadow-md"
+        >
+          <Upload className="w-3 h-3 mr-1.5" />
+          {value ? "Change Image" : "Upload Image"}
+        </Button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <BackBtn />
+      <div className="flex items-center gap-2">
+        <h3 className="font-heading font-bold text-gold">Theme Settings</h3>
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 font-bold uppercase tracking-wider">
+          Premium
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Customize background images for each section of your tournament
+      </p>
+      <div className="space-y-3">
+        <ThemeSection
+          label="Home Page"
+          value={themeHome}
+          setter={setThemeHome}
+          inputRef={homeRef}
+        />
+        <ThemeSection
+          label="Player Slots"
+          value={themeSlots}
+          setter={setThemeSlots}
+          inputRef={slotsRef}
+        />
+        <ThemeSection
+          label="Polls / Matches"
+          value={themePolls}
+          setter={setThemePolls}
+          inputRef={pollsRef}
+          badge="Per Poll"
+        />
+        <ThemeSection
+          label="Leaderboard"
+          value={themeLeaderboard}
+          setter={setThemeLeaderboard}
+          inputRef={lbRef}
+        />
+        <ThemeSection
+          label="Match Results"
+          value={themeResults}
+          setter={setThemeResults}
+          inputRef={resultsRef}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ─── Shared UI Components ─────────────────────────────────────────────────────
+function PageHeader({
+  title,
+  subtitle,
+  icon: Icon,
+}: { title: string; subtitle: string; icon: React.ElementType }) {
+  return (
+    <div className="px-4 pt-5 pb-3">
+      <div className="flex items-center gap-3">
+        <div className="w-9 h-9 rounded-xl bg-primary/20 flex items-center justify-center flex-shrink-0">
+          <Icon className="w-4.5 h-4.5 text-neon" />
+        </div>
+        <div>
+          <h2 className="font-heading text-lg font-bold text-foreground">
+            {title}
+          </h2>
+          <p className="text-xs text-muted-foreground">{subtitle}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({
+  message,
+  "data-ocid": ocid,
+}: { message: string; "data-ocid"?: string }) {
+  return (
+    <div data-ocid={ocid} className="text-center py-12 text-muted-foreground">
+      <Swords className="w-8 h-8 mx-auto mb-2 opacity-30" />
+      <p className="text-sm">{message}</p>
     </div>
   );
 }

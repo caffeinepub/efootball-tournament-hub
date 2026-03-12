@@ -10,43 +10,87 @@ import type { ActorMethod } from '@icp-sdk/core/agent';
 import type { IDL } from '@icp-sdk/core/candid';
 import type { Principal } from '@icp-sdk/core/principal';
 
-export interface Poll {
-  'question' : string,
-  'votes' : Array<bigint>,
-  'options' : Array<string>,
+export interface Announcement {
+  'id' : bigint,
+  'title' : string,
+  'date' : string,
+  'message' : string,
 }
-export type Time = bigint;
-export interface Tournament {
+export interface Bracket {
+  'qf' : Array<BracketSlot>,
+  'sf' : Array<BracketSlot>,
+  'final' : BracketSlot,
+}
+export interface BracketSlot {
+  'id' : bigint,
+  'team1' : string,
+  'team2' : string,
+}
+export interface LeaderboardRow {
+  'd' : bigint,
+  'l' : bigint,
+  'w' : bigint,
+  'ga' : bigint,
+  'gf' : bigint,
+  'id' : bigint,
+  'played' : bigint,
+  'player' : string,
+  'points' : bigint,
+}
+export interface MatchResult {
+  'id' : bigint,
+  'team1' : string,
+  'team2' : string,
+  'score1' : bigint,
+  'score2' : bigint,
+}
+export interface Poll { 'id' : bigint, 'matchup' : string }
+export interface Slot { 'id' : bigint, 'player' : string }
+export interface SlotRequest {
+  'id' : bigint,
+  'status' : string,
+  'submittedAt' : bigint,
+  'playerName' : string,
+  'slotNumber' : bigint,
+}
+export interface TournamentSettings {
+  'status' : string,
   'maxSlots' : bigint,
-  'name' : string,
-  'slots' : Array<string>,
-  'entryFee' : bigint,
-  'dateTime' : Time,
+  'entryFee' : string,
+  'dateTime' : string,
 }
 export interface UserProfile { 'name' : string }
 export type UserRole = { 'admin' : null } |
   { 'user' : null } |
   { 'guest' : null };
-export interface Winner { 'playerName' : string, 'position' : bigint }
 export interface _SERVICE {
   '_initializeAccessControlWithSecret' : ActorMethod<[string], undefined>,
-  'addWinner' : ActorMethod<[string, bigint], undefined>,
+  'approveSlotRequest' : ActorMethod<[bigint], undefined>,
   'assignCallerUserRole' : ActorMethod<[Principal, UserRole], undefined>,
-  'createOrUpdatePoll' : ActorMethod<[string, Array<string>], undefined>,
-  'createOrUpdateTournament' : ActorMethod<
-    [string, bigint, Time, bigint],
-    undefined
-  >,
+  'getAnnouncements' : ActorMethod<[], Array<Announcement>>,
+  'getBracket' : ActorMethod<[], Bracket>,
   'getCallerUserProfile' : ActorMethod<[], [] | [UserProfile]>,
   'getCallerUserRole' : ActorMethod<[], UserRole>,
-  'getPoll' : ActorMethod<[], [] | [Poll]>,
-  'getTournament' : ActorMethod<[], [] | [Tournament]>,
+  'getLeaderboard' : ActorMethod<[], Array<LeaderboardRow>>,
+  'getMatchResults' : ActorMethod<[], Array<MatchResult>>,
+  'getPolls' : ActorMethod<[], Array<Poll>>,
+  'getRules' : ActorMethod<[], string>,
+  'getSettings' : ActorMethod<[], TournamentSettings>,
+  'getSlotRequests' : ActorMethod<[], Array<SlotRequest>>,
+  'getSlots' : ActorMethod<[], Array<Slot>>,
   'getUserProfile' : ActorMethod<[Principal], [] | [UserProfile]>,
-  'getWinners' : ActorMethod<[], Array<Winner>>,
   'isCallerAdmin' : ActorMethod<[], boolean>,
+  'rejectSlotRequest' : ActorMethod<[bigint], undefined>,
   'saveCallerUserProfile' : ActorMethod<[UserProfile], undefined>,
-  'updateSlots' : ActorMethod<[Array<string>], undefined>,
-  'voteInPoll' : ActorMethod<[bigint], undefined>,
+  'setAnnouncements' : ActorMethod<[Array<Announcement>], undefined>,
+  'setBracket' : ActorMethod<[Bracket], undefined>,
+  'setLeaderboard' : ActorMethod<[Array<LeaderboardRow>], undefined>,
+  'setMatchResults' : ActorMethod<[Array<MatchResult>], undefined>,
+  'setPolls' : ActorMethod<[Array<Poll>], undefined>,
+  'setRules' : ActorMethod<[string], undefined>,
+  'setSlots' : ActorMethod<[Array<Slot>], undefined>,
+  'submitSlotRequest' : ActorMethod<[string, bigint], bigint>,
+  'updateSettings' : ActorMethod<[TournamentSettings], undefined>,
 }
 export declare const idlService: IDL.ServiceClass;
 export declare const idlInitArgs: IDL.Type[];
